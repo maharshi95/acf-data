@@ -1,10 +1,6 @@
-ACF Regionals Tournament Structure
+ACF Tournament Structure
 =
-This document describes the process and structure of the Regionals tournament in the Science Bowl competition.
-
-## Overview
-
-Regionals is a crucial stage in the National Science Bowl competition. It serves as a qualifying round for teams to advance to the National Finals. Regional competitions are held across the United States, typically organized by Department of Energy (DOE) laboratories or field offices.
+This document describes the process and structure of an ACF tournament, the concepts and entities involved, and the relationships between them --- the database schema.
 
 ## Structure
 
@@ -22,26 +18,23 @@ Regionals is a crucial stage in the National Science Bowl competition. It serves
 
 5. **Scoring**: Points are awarded for correct answers, with toss-up questions typically worth 10 points and bonus questions worth 10 points. An incorrect answer results in a negative score of -5 points.
 
-## Entities
+## Entities and Relationships
 
-To better understand the tournament structure, here are the key entities involved:
+To better understand the full scope of the database and the data model, let's break it down into its core components:
 
-- **question_set**: A collection of questions grouped by a common theme or difficulty.
-- **question_set_edition**: A specific edition of a question set, which may be updated or revised over time.
-- **packet**: A set of questions used in a specific round or match.
-- **packet_question**: A mapping between packets and questions, indicating which questions are included in which packets.
-- **question**: An individual question, including metadata such as author, category, and difficulty.
-- **tournament**: A specific tournament, including details such as name, location, and dates.
-- **round**: A specific round within a tournament, which may use a particular packet of questions.
-- **game**: A match between two teams within a round.
 - **team**: A team participating in the tournament.
 - **player**: An individual player on a team.
-- **tossup**: An instance of a question that is asked in a game and is open to all team members to answer.
 - **buzz**: A player's attempt to answer a tossup question, including the position and value of the buzz.
 
 These entities form the foundation of the tournament's structure and organization.
 
 #### __Question Organization__
+
+- `question_set`: A collection of questions grouped by a common theme or difficulty.
+- `question_set_edition`: A specific edition of a question set, which may be updated or revised over time.
+- `packet`: A set of questions used in a specific round or match.
+- `packet_question`: A mapping between packets and questions, indicating which questions are included in which packets.
+- `question`: An individual question, including metadata such as author, category, and difficulty.
 
 ```mermaid
 erDiagram
@@ -49,7 +42,6 @@ erDiagram
     question_set_edition ||--o{ packet : contains
     packet ||--o{ packet_question : has
     question ||--o{ packet_question : in
-    question ||--o{ tossup : has
 
     question_set {
         int id PK
@@ -90,6 +82,43 @@ erDiagram
         string category_main_slug
         string category_full
     }
+```
+
+- `tossup`: An instance of a question that is asked in a game and is open to all team members to answer.
+- `bonus`: A type of question that is only available to the team that correctly answers the corresponding tossup question.
+- `bonus_part`: A part of a bonus question, including the part number, the part text, and the answer to the part.
+- `bonus_hash`: A mapping between a bonus question and its corresponding hash.
+- `tossup_hash`: A mapping between a tossup question and its corresponding hash.
+
+```mermaid
+erDiagram
+    question ||--o{ bonus : has
+    bonus ||--o{ bonus_hash : has
+    bonus ||--o{ bonus_part : contains
+    question ||--o{ tossup : has
+    tossup ||--o{ tossup_hash : has
+
+    question {
+        int id PK
+    }
+    bonus {
+        int id PK
+        int question_id FK
+        string leadin
+        string leadin_sanitized
+    }
+    bonus_part {
+        int id PK
+        int part_number
+        int bonus_id FK
+        string part
+        string part_sanitized
+        string answer
+        string answer_sanitized
+        string answer_primary
+        int value
+        string difficulty_modifier
+    }
     tossup {
         int id PK
         int question_id FK
@@ -98,16 +127,24 @@ erDiagram
         string answer_sanitized
         string answer_primary
     }
+    bonus_hash {
+        string hash PK
+        int question_id FK
+        int bonus_id FK
+    }
+    tossup_hash {
+        string hash PK
+        int question_id FK
+        int tossup_id FK
+    }
 ```
 
-- **question_set**: Represents a collection of questions grouped by a common theme or difficulty.
-- **question_set_edition**: A specific edition of a question set, which may be updated or revised over time.
-- **packet**: A set of questions used in a specific round or match.
-- **packet_question**: A mapping between packets and questions, indicating which questions are included in which packets.
-- **question**: Represents an individual question, including metadata such as author, category, and difficulty.
-- **tossup**: A type of question that is open to all team members to answer.
 
-#### __Tournament / Game Organization__
+#### __Games Organization__
+
+- `tournament`: A specific tournament, including details such as name, location, and dates. e.g. "2024 Midwest Regional", "2024 Indiana State Fair Classic", "2024 Nationals"
+- `round`: A specific round within a tournament, which may use a particular packet of questions.
+- `game`: A match between two teams within a round.
 ```mermaid
 erDiagram
     tournament ||--o{ round : has
@@ -148,14 +185,11 @@ erDiagram
 ```
 
 
-- **tournament**: Represents a specific tournament, including details such as name, location, and dates.
-- **round**: A specific round within a tournament, which may use a particular packet of questions.
-- **game**: A match between two teams within a round.
-- **question_set_edition**: (Repeated from above) A specific edition of a question set.
-- **packet**: (Repeated from above) A set of questions used in a specific round or match.
-
-
 #### __Player/Team Organization__
+
+- `team`: Represents a team participating in the tournament.
+- `player`: Represents an individual player on a team.
+
 ```mermaid
 erDiagram
     team ||--o{ player : has
@@ -165,8 +199,11 @@ erDiagram
     
     tournament {
         int id PK
-        string name
-        string slug
+    }
+    game {
+        int id PK
+        int team_one_id FK
+        int team_two_id FK
     }
     team {
         int id PK
@@ -180,29 +217,23 @@ erDiagram
         string name
         string slug
     }
-    game {
-        int id PK
-        int team_one_id FK
-        int team_two_id FK
-    }
+
 ```
 
 
-**Entities:**
-
-- **team**: Represents a team participating in the tournament.
-- **player**: Represents an individual player on a team.
-- **tournament**: (Repeated from above) Represents a specific tournament.
-- **game**: (Repeated from above) A match between two teams within a round.
 
 
-### __Player/Question Interaction__ 
+
+### __Player/Team Interaction with Questions__ 
 
 ```mermaid
 erDiagram
-    game ||--o{ buzz : records
     player ||--o{ buzz : makes
     tossup ||--o{ buzz : on
+    game ||--o{ buzz : records
+    game ||--o{ bonus_part_direct : records
+    bonus_part ||--o{ bonus_part_direct : of
+    team ||--o{ bonus_part_direct : answers
 
     game {
         int id PK
@@ -213,12 +244,26 @@ erDiagram
     tossup {
         int id PK
     }
+    bonus_part {
+        int id PK
+    }
+    team {
+        int id PK
+    }
+
     buzz {
         int id PK
         int player_id FK
         int game_id FK
         int tossup_id FK
         int buzz_position
+        int value
+    }
+    bonus_part_direct {
+        int id PK
+        int team_id FK
+        int game_id FK
+        int bonus_part_id FK
         int value
     }
 ```
