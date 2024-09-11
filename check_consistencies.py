@@ -13,6 +13,7 @@ python check_consistencies.py <db_path>
 """
 
 import sys
+from collections import defaultdict
 from datetime import timedelta
 
 import models
@@ -75,3 +76,32 @@ for qset in session.query(models.QuestionSetEdition).all():
 
 for qset in session.query(models.QuestionSetEdition).all():
     print(qset.full_slug, qset.question_set.difficulty.split()[0])
+
+# Check for duplicate questions
+questions = session.query(models.Question).all()
+
+
+def unique_key(q: models.Question):
+    return q.unique_key()
+
+
+for q in questions:
+    if len(q.tossups) > 1:
+        print(q.id, len(q.tossups))
+
+
+def list_duplicates(lst, key_fn):
+    entries_by_key = defaultdict(list)
+    for item in lst:
+        entries_by_key[key_fn(item)].append(item)
+    for key, items in entries_by_key.items():
+        if len(items) > 1:
+            print(key, len(items))
+            for item in items:
+                for t in item.tossups:
+                    print(item.category_full, t.question_text)
+            print("- " * 50)
+
+
+print("Questions")
+list_duplicates(questions, unique_key)

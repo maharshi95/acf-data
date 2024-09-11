@@ -11,6 +11,7 @@ python add_missing_columns.py data/sst-23-24-cleaned.db data/nats24.db
 """
 
 import sys
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 

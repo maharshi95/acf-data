@@ -65,4 +65,5 @@ Check for various inconsistencies in a target database. E.g., it checks if:
 
 ```bash
 python check_consistencies.py data/sst-23-24-cleaned.db
+python check_consistencies.py data/acf-23-24.db
 ```
