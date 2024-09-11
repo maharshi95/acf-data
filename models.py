@@ -7,8 +7,21 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     create_engine,
+    event,
 )
-from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
+
+
+def validate_packet_question(mapper, connection, target):
+    session = Session.object_session(target)
+    question = session.query(Question).filter_by(id=target.question_id).one()
+    packet = session.query(Packet).filter_by(id=target.packet_id).one()
+
+    if question.question_set_edition_id != packet.question_set_edition_id:
+        raise ValueError(
+            f"Question {question.id} is associated with a different question_set_edition "
+            f"than Packet {packet.id}"
+        )
 
 
 def to_dict(obj):
@@ -34,10 +47,8 @@ class Base(DeclarativeBase):
         ]
         if len(unique_constraints) == 0:
             return None
-        unique_constraint = unique_constraints[0]
-        return ", ".join(
-            [str(getattr(self, c.name)) for c in unique_constraint.columns]
-        )
+        uk_columns = unique_constraints[0].columns
+        return ", ".join([str(getattr(self, c.key)) for c in uk_columns])
 
     @classmethod
     def non_pk_columns(cls):
@@ -70,7 +81,13 @@ class QuestionSetEdition(Base):
     packets = relationship("Packet", back_populates="question_set_edition")
     tournaments = relationship("Tournament", back_populates="question_set_edition")
 
-    __table_args__ = (UniqueConstraint("slug", name="uq_question_set_edition_slug"),)
+    __table_args__ = (
+        UniqueConstraint("question_set_id", "slug", name="uq_qset_edition_set_id_slug"),
+    )
+
+    @property
+    def full_slug(self):
+        return f"{self.question_set.slug}_{self.slug}"
 
 
 class Packet(Base):
@@ -98,6 +115,14 @@ class PacketQuestion(Base):
     packet = relationship("Packet", back_populates="packet_questions")
     question = relationship("Question", back_populates="packet_questions")
 
+    __table_args__ = (
+        UniqueConstraint(
+            "packet_id",
+            "question_id",
+            name="uq_packet_question_packet_id_question_number",
+        ),
+    )
+
 
 class Question(Base):
     __tablename__ = "question"
@@ -116,15 +141,23 @@ class Question(Base):
     category_main_slug = Column(String)
     category_full = Column(String)
 
+    # New column added for consistency. Maybe not be present.
+    # Run `python add_missing_columns.py` to add it to the database.
+    question_set_edition_id = Column(
+        Integer, ForeignKey("question_set_edition.id"), nullable=True
+    )
+
     packet_questions = relationship("PacketQuestion", back_populates="question")
     tossups = relationship("Tossup", back_populates="question")
+    question_set_edition = relationship("QuestionSetEdition")
 
     __table_args__ = (
         UniqueConstraint(
             "slug",
-            "question_metadata",
             "author",
-            "category_full",
+            "editor",
+            "question_metadata",
+            "question_set_edition_id",
             name="uq_question_slug_metadata",
         ),
     )
@@ -145,6 +178,14 @@ class Tossup(Base):
 
     question = relationship("Question", back_populates="tossups")
     buzzes = relationship("Buzz", back_populates="tossup")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            "question_text",
+            name="uq_tossup_question_id_text",
+        ),
+    )
 
 
 class Tournament(Base):
@@ -262,6 +303,10 @@ class Buzz(Base):
     )
 
 
+event.listen(PacketQuestion, "before_insert", validate_packet_question)
+event.listen(PacketQuestion, "before_update", validate_packet_question)
+
+
 all_classes = [
     QuestionSet,
     QuestionSetEdition,
@@ -281,7 +326,8 @@ all_classes = [
 def create_session(db_path, create_tables=False):
     engine = create_engine(f"sqlite:///{db_path}")
     if create_tables:
-        Base.metadata.create_all(engine)  # Create tables if they don't exist
+        # Create tables if they don't exist
+        Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     return Session()
 
