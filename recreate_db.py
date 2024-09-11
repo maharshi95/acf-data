@@ -1,4 +1,3 @@
-# %%
 """
 Prunes and dumps a SQLite database by copying selected tables.
 
@@ -10,8 +9,16 @@ This module contains a function `prune_and_dump_db` that:
 Args:
     input_db_path (str): Path to the input SQLite database.
     output_db_path (str): Path for the new, pruned SQLite database.
+
+Example usage:
+    # To prune and dump a database:
+    python recreate_db.py input_database.db output_database.db
+
+    # To prune, dump, and test equality:
+    python recreate_db.py input_database.db output_database.db --test
 """
 
+import argparse
 import os
 import sqlite3
 from typing import Iterable
@@ -96,12 +103,22 @@ def test_db_equality(input_db_path, output_db_path):
     return True
 
 
-# Usage
-input_db_path = "./data/sst-23-24.db"  # Replace with your input database path
-output_db_path = "./data/sst-23-24-cleaned.db"  # Replace with your desired output path
+# Set up argument parser
+parser = argparse.ArgumentParser(
+    description="Prune and dump a database, then test equality."
+)
+parser.add_argument("input_db", help="Path to the input database")
+parser.add_argument("output_db", help="Path to the output database")
+parser.add_argument(
+    "--test", action="store_true", help="Run equality test after pruning"
+)
+args = parser.parse_args()
 
-prune_and_dump_db(input_db_path, output_db_path)
+# Prune and dump the database
+prune_and_dump_db(args.input_db, args.output_db)
+print(f"Pruned database saved to {args.output_db}")
 
-# Test the equality of the databases
-test_result = test_db_equality(input_db_path, output_db_path)
-print(f"Test result: {'Passed' if test_result else 'Failed'}")
+# Test the equality of the databases if requested
+if args.test:
+    test_result = test_db_equality(args.input_db, args.output_db)
+    print(f"Test result: {'Passed' if test_result else 'Failed'}")

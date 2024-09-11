@@ -1,3 +1,14 @@
+"""
+Merge multiple SQLite databases with the same schema into a single database.
+
+This script performs a topological sort on database tables based on their dependencies,
+then merges the tables in order, handling conflicts and duplicates.
+
+Example usage:
+    python merge_db.py -i <input1.db> [<input2.db> ...] -o <output.db>
+"""
+
+import argparse
 import os
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Type
@@ -219,19 +230,23 @@ def record_exists(
 # %%
 if __name__ == "__main__":
     # Run the merge
-    src_db_paths = [
-        "data/sst-23-24-cleaned.db",
-        "data/nats24.db",
-    ]
-    merged_db_path = "data/acf-23-24.db"
+    parser = argparse.ArgumentParser(description="Merge multiple databases into one.")
+    parser.add_argument("--target_db", "-o", help="Path to the output merged database")
+    parser.add_argument(
+        "--src_dbs", "-i", nargs="+", help="Paths to the source databases to merge"
+    )
+    args = parser.parse_args()
 
-    if os.path.exists(merged_db_path):
-        os.remove(merged_db_path)
+    src_db_paths = args.src_dbs
+    target_db_path = args.target_db
+
+    if os.path.exists(target_db_path):
+        os.remove(target_db_path)
 
     for src_db_path in src_db_paths:
-        merge_databases(src_db_path, merged_db_path)
+        merge_databases(src_db_path, target_db_path)
 
-    session = create_session(merged_db_path)
+    session = create_session(target_db_path)
     t = session.query(models.Tossup).first()
     print(t.question_text)
     print(t.question)

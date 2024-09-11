@@ -1,4 +1,16 @@
-# %%
+"""
+Adds a `question_set_edition_id` column to the `question` table.
+
+This column is necessary for ACF data consistency.
+
+Example usage:
+
+```bash
+python add_missing_columns.py data/sst-23-24-cleaned.db data/nats24.db
+```
+"""
+
+import sys
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
@@ -66,13 +78,7 @@ def add_question_set_edition_id_to_question(db_path: str):
 
 
 if __name__ == "__main__":
-    db_paths = [
-        "data/sst-23-24-cleaned.db",
-        "data/nats24.db",
-    ]
+    db_paths = sys.argv[1:]
     for db_path in db_paths:
         print(f"\nAdding question_set_edition_id to {db_path}")
         add_question_set_edition_id_to_question(f"sqlite:///{db_path}")
-
-
-# %%

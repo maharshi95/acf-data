@@ -78,6 +78,7 @@ class QuestionSetEdition(Base):
     date = Column(Date)
 
     question_set = relationship("QuestionSet", back_populates="editions")
+    questions = relationship("Question", back_populates="question_set_edition")
     packets = relationship("Packet", back_populates="question_set_edition")
     tournaments = relationship("Tournament", back_populates="question_set_edition")
 
@@ -149,7 +150,9 @@ class Question(Base):
 
     packet_questions = relationship("PacketQuestion", back_populates="question")
     tossups = relationship("Tossup", back_populates="question")
-    question_set_edition = relationship("QuestionSetEdition")
+    question_set_edition = relationship(
+        "QuestionSetEdition", back_populates="questions"
+    )
 
     __table_args__ = (
         UniqueConstraint(
