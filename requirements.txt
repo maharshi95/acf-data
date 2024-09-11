@@ -1,0 +1,8 @@
+numpy
+pandas
+tabulate
+loguru
+blingfire
+sqlalchemy
+matplotlib
+nltk

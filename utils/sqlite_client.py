@@ -1,11 +1,11 @@
 # %%
-import json
-import os
 import sqlite3 as sq
 from collections import defaultdict
 
 import pandas as pd
 from tabulate import tabulate
+
+import queries
 
 
 def print_table(df: pd.DataFrame):
@@ -47,10 +47,24 @@ class DBClient:
     def table_head(self, table_name: str, n_rows: int = 10):
         return self.Q(f"SELECT * FROM {table_name} LIMIT {n_rows};")
 
+    def get_tossups_info(self):
+        return self.Q(queries.TOSSUP_INFO_QUERY).set_index("id")
 
-# %%
-nats24 = DBClient("./data/nats24.db")
-sst24 = DBClient("./data/sst-23-24-cleaned.db")
+    def get_game_info(self):
+        return self.Q(queries.GAME_INFO_QUERY).set_index("id")
+
+    def get_player_info(self):
+        return self.Q(queries.PLAYER_INFO_QUERY).set_index("id")
+
+    def get_buzzpoints_info(self):
+        df = (
+            self.Q(queries.BUZZPOINTS_INFO_QUERY)
+            .set_index("id")
+            .drop_duplicates(subset=["player_id", "tossup_id", "buzz_position"])
+        )
+        df = df[~df["buzz_position"].isna()]
+        df["buzz_position"] = df["buzz_position"].astype(int)
+        return df
 
 
 def check_subset(entity_name: str, db1: DBClient, db2: DBClient):
@@ -92,68 +106,6 @@ def check_subset(entity_name: str, db1: DBClient, db2: DBClient):
 
 
 # %%
-GAME_INFO_QUERY = """
-SELECT
-    game.id as id,
-    t1.slug as team1,
-    t2.slug as team2,
-    tourn.slug as tournament,
-    tourn.level as tournament_level,
-    round.number as round,
-    packet.name as packet,
-    qs.slug as qset,
-    qs.difficulty as qset_difficulty
-FROM
-    game
-JOIN
-    round ON game.round_id = round.id
-JOIN
-    tournament tourn ON round.tournament_id = tourn.id
-JOIN
-    packet ON round.packet_id = packet.id
-JOIN
-    question_set_edition qse ON packet.question_set_edition_id = qse.id
-JOIN
-    question_set qs ON qse.question_set_id = qs.id
-LEFT JOIN
-    team t1 ON game.team_one_id = t1.id
-LEFT JOIN
-    team t2 ON game.team_two_id = t2.id
-"""
-
-PLAYER_INFO_QUERY = """
-SELECT
-    player.id as id,
-    player.slug as slug,
-    player.name as name,
-    team.slug as team,
-    tournament.slug as tournament
-FROM
-    player
-JOIN
-    team ON player.team_id = team.id
-JOIN
-    tournament ON team.tournament_id = tournament.id;"""
-
-TOSSUP_INFO_QUERY = """
-SELECT
-    tu.id as id,
-    tu.question_id as question_id,
-    q.slug as slug,
-    tu.question as question,
-    tu.answer as answer,
-    tu.answer_sanitized as answer_sanitized,
-    tu.answer_primary as answer_primary,
-    q.category_slug as category,
-    q.subcategory_slug as subcategory,
-    q.category_main_slug as category_main
-FROM
-    tossup tu
-JOIN
-    question q ON tu.question_id = q.id
-"""
-
-# %%
 # for entity_name in ["player", "team", "question", "question_set_edition"]:
 #     check_subset(entity_name, regs24, sst24)
 
@@ -166,6 +118,10 @@ def list_dups(db: DBClient, table_name: str, columns: list[str]):
         return
     if len(dups) > 0:
         print_table(dups)
+
+
+nats24 = DBClient("./data/nats24.db")
+sst24 = DBClient("./data/sst-23-24-cleaned.db")
 
 
 for db in [sst24, nats24]:
@@ -193,24 +149,44 @@ for slug, names in slug_map.items():
         print(f"{slug: >20} -> {names}")
 
 # %%
-game_df = nats24(GAME_INFO_QUERY)
-assert game_df["id"].nunique() == game_df.shape[0]
-game_df = game_df.set_index("id")
-game_df
+if name == "__main__":
+    game_df = nats24(GAME_INFO_QUERY)
+    assert game_df["id"].nunique() == game_df.shape[0]
+    game_df = game_df.set_index("id")
+    game_df
 
-# %%
-player_df = nats24(PLAYER_INFO_QUERY)
-assert player_df["id"].nunique() == player_df.shape[0]
-player_df = player_df.set_index("id")
-player_df
+    # %%
+    player_df = nats24(PLAYER_INFO_QUERY)
+    assert player_df["id"].nunique() == player_df.shape[0]
+    player_df = player_df.set_index("id")
+    player_df
 
-# %%
-tossup_df = nats24(TOSSUP_INFO_QUERY)
-assert tossup_df["id"].nunique() == tossup_df.shape[0]
-tossup_df = tossup_df.set_index("id")
-tossup_df
+    # %%
+    tossup_df = nats24(TOSSUP_INFO_QUERY)
+    assert tossup_df["id"].nunique() == tossup_df.shape[0]
+    tossup_df = tossup_df.set_index("id")
+    tossup_df
 
-# %%
+    # %%
+    bonus_part_df = nats24(BONUS_PART_INFO_QUERY)
+    assert bonus_part_df["id"].nunique() == bonus_part_df.shape[0]
+    bonus_part_df = bonus_part_df.set_index("id")
+    bonus_part_df
 
+    # %%
 
-# %%
+    # Check if column bonus_id and question_id are one-to-one in bonus_part_df
+    bonus_part_df[["bonus_id"]].shape[0]
+
+    # %%
+    bonus_df = nats24.get_table("bonus")
+    bonus_df[["question_id"]].drop_duplicates().shape[0]
+    # %%
+
+    set(bonus_part_df["slug"]).intersection(set(tossup_df["slug"]))
+    # %%
+    nats24.get_table("question")["metadata"][1]
+    # %%
+
+    bonus_part_df.iloc[1]["leadin"]
+    # %%
