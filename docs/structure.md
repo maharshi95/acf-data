@@ -40,6 +40,7 @@ These entities form the foundation of the tournament's structure and organizatio
 erDiagram
     question_set ||--o{ question_set_edition : has
     question_set_edition ||--o{ packet : contains
+    question_set_edition ||--o{ question : has
     packet ||--o{ packet_question : has
     question ||--o{ packet_question : in
 
@@ -69,6 +70,7 @@ erDiagram
     }
     question {
         int id PK
+        int question_set_edition_id FK
         string slug
         string metadata
         string author
@@ -92,10 +94,10 @@ erDiagram
 
 ```mermaid
 erDiagram
-    question ||--o{ bonus : has
+    question ||--o| bonus : "can be"
     bonus ||--o{ bonus_hash : has
     bonus ||--o{ bonus_part : contains
-    question ||--o{ tossup : has
+    question ||--o| tossup : "can be"
     tossup ||--o{ tossup_hash : has
 
     question {
@@ -149,7 +151,8 @@ erDiagram
 erDiagram
     tournament ||--o{ round : has
     round ||--o{ game : includes
-    question_set_edition ||--o{ tournament : uses
+    question_set_edition ||--o{ tournament : used_in
+    question_set_edition ||--o{ packet : contains
     packet ||--o{ round : used_in
 
     tournament {
@@ -181,6 +184,7 @@ erDiagram
     }
     packet {
         int id PK
+        int question_set_edition_id FK
     }
 ```
 
@@ -192,18 +196,11 @@ erDiagram
 
 ```mermaid
 erDiagram
-    team ||--o{ player : has
     tournament ||--o{ team : has
-    game }o--|| team : team_one
-    game }o--|| team : team_two
+    team ||--o{ player : has
     
     tournament {
         int id PK
-    }
-    game {
-        int id PK
-        int team_one_id FK
-        int team_two_id FK
     }
     team {
         int id PK
@@ -228,15 +225,20 @@ erDiagram
 
 ```mermaid
 erDiagram
+    team ||--o{ player : has
     player ||--o{ buzz : makes
     tossup ||--o{ buzz : on
     game ||--o{ buzz : records
     game ||--o{ bonus_part_direct : records
     bonus_part ||--o{ bonus_part_direct : of
     team ||--o{ bonus_part_direct : answers
+    team ||--o{ game : team_one
+    team ||--o{ game : team_two
 
     game {
         int id PK
+        int team_one_id FK
+        int team_two_id FK
     }
     player {
         int id PK
