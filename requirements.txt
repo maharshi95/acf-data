@@ -6,3 +6,4 @@ blingfire
 sqlalchemy
 matplotlib
 nltk
+msgspec
