@@ -122,9 +122,11 @@ def list_dups(db: DBClient, table_name: str, columns: list[str]):
 
 nats24 = DBClient("./data/nats24.db")
 sst24 = DBClient("./data/sst-23-24-cleaned.db")
+acf24 = DBClient("./data/acf-23-24.db")
 
 
-for db in [sst24, nats24]:
+for db in [sst24, nats24, acf24]:
+    print("Listing duplicates for", db.path)
     list_dups(db, "team", ["slug", "tournament_id"])
     list_dups(db, "player", ["slug", "team_id"])
 

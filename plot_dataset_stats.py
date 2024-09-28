@@ -233,93 +233,6 @@ else:
     print("No duplicates found.")
 
 
-# %%
-
-
-# %%
-
-
-player_key = "team"
-
-n_players = buzz_df[player_key].nunique()
-n_tossups = buzz_df["tossup_id"].nunique()
-player_ids = buzz_df[player_key].unique()
-tossup_ids = buzz_df["tossup_id"].unique()
-
-matrix = np.zeros((n_players, n_tossups))
-player_id_to_index = {p: i for i, p in enumerate(player_ids)}
-tossup_id_to_index = {t: i for i, t in enumerate(tossup_ids)}
-for i, row in buzz_df.iterrows():
-    player_index = player_id_to_index[row[player_key]]
-    tossup_index = tossup_id_to_index[row["tossup_id"]]
-    matrix[player_index, tossup_index] = 1
-
-player_activity = matrix.sum(axis=1)
-tossup_activity = matrix.sum(axis=0)
-
-player_permutation = np.argsort(player_activity)[::-1]
-tossup_permutation = np.argsort(tossup_activity)[::-1]
-new_matrix = matrix[player_permutation, :][:, tossup_permutation]
-
-# %%
-plt.imshow(new_matrix[:, :1200], aspect="auto", cmap="gray")
-plt.show()
-# %%
-print("Density:", 100 * new_matrix.sum() / new_matrix.size)
-# %%
-
-# Biclustering of new_matrix
-from sklearn.cluster import SpectralBiclustering
-from sklearn.metrics import consensus_score
-
-# Define the number of clusters (you may need to adjust these)
-n_row_clusters = 6
-n_col_clusters = 10
-n_clusters = (n_row_clusters, n_col_clusters)  # (n_row_clusters, n_column_clusters)
-
-# Perform biclustering
-model = SpectralBiclustering(
-    n_clusters=n_clusters, method="bistochastic", random_state=0
-)
-model.fit(new_matrix)
-
-# Get row and column labels
-row_labels = model.row_labels_
-col_labels = model.column_labels_
-
-# Rearrange the data
-fit_data = new_matrix[np.argsort(row_labels)]
-fit_data = fit_data[:, np.argsort(col_labels)]
-
-# Plot the biclustered matrix
-plt.figure(figsize=(12, 8))
-plt.imshow(fit_data, aspect="auto", cmap="binary", interpolation="nearest")
-plt.spy(fit_data, aspect="auto", markersize=0.2)
-plt.title("Biclustered Matrix")
-plt.colorbar()
-
-# Add lines to separate clusters
-for i in range(1, n_row_clusters):
-    plt.axhline(y=np.sum(row_labels < i) - 0.5, color="r", linestyle="--")
-for i in range(1, n_col_clusters):
-    plt.axvline(x=np.sum(col_labels < i) - 0.5, color="r", linestyle="--")
-
-plt.show()
-clusters = []
-# Print some statistics about the clusters
-for i in range(n_clusters[0]):
-    for j in range(n_clusters[1]):
-        cluster = fit_data[row_labels == i][:, col_labels == j]
-        clusters.append(cluster)
-
-clusters.sort(key=lambda x: x.mean(), reverse=True)
-for cluster in clusters[:10]:
-    print(f"Cluster ({i}, {j}):")
-    print(f"  Size: {cluster.shape}")
-    print(f"  Density: {cluster.mean():.2f}")
-    print()
-
-
 # plot player activity
 # plt.plot(player_activity)
 
@@ -342,4 +255,33 @@ players_df = db.get_player_info()
 # Check which player.slug are in db2 but not in db
 set(players_df2["slug"]).intersection(set(players_df["slug"]))
 
+# %%
+
+session1 = models.create_session("./data/acf-23-24.db")
+session2 = models.create_session("./data/sst-23-24-cleaned.db")
+# %%
+# List all buzzes from acf24 such that the player slug is X
+acf_buzzes = (
+    session1.query(models.Buzz)
+    .filter(models.Buzz.player.has(slug="jeffrey-deremo"))
+    .all()
+)
+acf_buzzes.sort(key=lambda x: (x.value, x.buzz_position))
+for b in acf_buzzes:
+    print(b.value, b.buzz_position)
+print("- " * 50)
+sst_buzzes = (
+    session2.query(models.Buzz)
+    .filter(models.Buzz.player.has(slug="jeffrey-deremo"))
+    .all()
+)
+sst_buzzes.sort(key=lambda x: (x.value, x.buzz_position))
+for b in sst_buzzes:
+    print(b.value, b.buzz_position)
+
+# %%
+print(len(acf_buzzes), len(sst_buzzes))
+# %%
+
+session2.query(models.Buzz).filter(models.Buzz.player.has(id=1429)).all()
 # %%
