@@ -1,3 +1,4 @@
+# %%
 import re
 from typing import Tuple
 
@@ -134,6 +135,76 @@ def get_buzz_offset(q):
 
 def tokenize(q):
     return sanitize_question(q).split()
+
+
+# Check if answer line has explanation. Explanation is in () at the end of the line
+def split_explanation(line: str):
+    if line.endswith(")") and (i := line.rfind("(")) > 0:
+        explanation = line[i:]
+        if remove_pgs(" " + explanation) != "":
+            answer_line = line[:i].strip()
+            explanation = explanation.strip("()")
+            return answer_line, explanation
+    return line, ""
+
+
+def get_clean_answers(raw_ans_text: str):
+    answer_line, explanation = split_explanation(raw_ans_text)
+
+    for c in ["\\“", "\\”", '\\"']:
+        answer_line = answer_line.replace(c, '"')
+    for c in ["“", "”"]:
+        answer_line = answer_line.replace(c, '"')
+    answer_line = answer_line.replace("\\'", "'")
+    answer_line = answer_line.replace("&nbsp;", " ")
+    answer_line = remove_tags(answer_line)
+    answer_line = remove_pgs(answer_line)
+    answer_line = answer_line.replace('"', "")
+
+    def normalize_braces(s: str) -> str:
+        s = (
+            s.replace("{", "")
+            .replace("}", "")
+            .removeprefix("or ")
+            .removesuffix("]")
+            .removesuffix(")")
+            .removesuffix(";")
+            .strip()
+        )
+        if s.startswith('"') and s.endswith('"'):
+            s = s[1:-1]
+        return s
+
+    answers = []
+    bad_index_starts = list(
+        re.finditer(r"(\[| |;)(prompt|do not accept|before) ", answer_line)
+    )
+    if bad_index_starts:
+        idx = bad_index_starts[0].span()[0]
+        answer_line = answer_line[:idx]
+
+    if "[" in answer_line:
+        gold, alternates = answer_line.split("[", 1)
+    else:
+        gold, alternates = answer_line, ""
+
+    candidates = []
+
+    alternates = alternates.removeprefix("or ").removeprefix("accept ")
+    for words in set(re.split(r" or,? ", alternates)):
+        candidates.extend(words.split(" accept "))
+    for words in set(re.split(r" or,? ", gold)):
+        candidates.extend(words.split(" accept "))
+
+    answers.extend(candidates)
+    for split in candidates:
+        braced = re.findall(r"\{.+?\}", split)  # find all {braced} answers
+        if len(braced) >= 1:
+            answers.append(" ".join(map(normalize_braces, braced)))
+            answers.extend(map(normalize_braces, braced))
+
+    answers = {*map(normalize_braces, answers)} - {""}
+    return list(answers), explanation
 
 
 if __name__ == "__main__":

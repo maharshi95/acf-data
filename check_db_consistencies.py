@@ -16,12 +16,12 @@ import sys
 from collections import defaultdict
 from datetime import timedelta
 
-import models
-from models import create_session
+import core.models as models
+from core.models import create_session
 
 db_path = sys.argv[1]
 
-print(f"Checking database at {db_path}")
+print(f"Checking database at {db_path}...")
 session = create_session(db_path)
 
 
@@ -73,7 +73,7 @@ for qset in session.query(models.QuestionSetEdition).all():
     levels = {t.level for t in qset.tournaments}
     assert len(levels) == 1
 
-
+print("Question Set Difficulties:")
 for qset in session.query(models.QuestionSetEdition).all():
     print(qset.full_slug, qset.question_set.difficulty.split()[0])
 
@@ -103,5 +103,10 @@ def list_duplicates(lst, key_fn):
             print("- " * 50)
 
 
-print("Questions")
-list_duplicates(questions, unique_key)
+if not questions:
+    print("No duplicate questions found")
+else:
+    print("Duplicate Questions:")
+    list_duplicates(questions, unique_key)
+
+# %%

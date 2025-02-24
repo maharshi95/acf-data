@@ -5,7 +5,7 @@ from collections import defaultdict
 import pandas as pd
 from tabulate import tabulate
 
-import queries
+import core.queries as queries
 
 
 def print_table(df: pd.DataFrame):
@@ -152,25 +152,25 @@ for slug, names in slug_map.items():
 
 # %%
 if name == "__main__":
-    game_df = nats24(GAME_INFO_QUERY)
+    game_df = nats24(queries.GAME_INFO_QUERY)
     assert game_df["id"].nunique() == game_df.shape[0]
     game_df = game_df.set_index("id")
     game_df
 
     # %%
-    player_df = nats24(PLAYER_INFO_QUERY)
+    player_df = nats24(queries.PLAYER_INFO_QUERY)
     assert player_df["id"].nunique() == player_df.shape[0]
     player_df = player_df.set_index("id")
     player_df
 
     # %%
-    tossup_df = nats24(TOSSUP_INFO_QUERY)
+    tossup_df = nats24(queries.TOSSUP_INFO_QUERY)
     assert tossup_df["id"].nunique() == tossup_df.shape[0]
     tossup_df = tossup_df.set_index("id")
     tossup_df
 
     # %%
-    bonus_part_df = nats24(BONUS_PART_INFO_QUERY)
+    bonus_part_df = nats24(queries.BONUS_PART_INFO_QUERY)
     assert bonus_part_df["id"].nunique() == bonus_part_df.shape[0]
     bonus_part_df = bonus_part_df.set_index("id")
     bonus_part_df

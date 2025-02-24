@@ -18,8 +18,8 @@ from loguru import logger
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import Session
 
-import models
-from models import Base, all_classes, create_session
+import core.models as models
+from core.models import Base, all_classes, create_session
 from utils.viz_utils import DiffVisualizer
 
 

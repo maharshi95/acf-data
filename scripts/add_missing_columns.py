@@ -15,7 +15,7 @@ import sys
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from models import PacketQuestion, Question
+from core.models import PacketQuestion, Question, Tournament
 
 
 def column_exists(engine, table_name, column_name):
@@ -78,8 +78,52 @@ def add_question_set_edition_id_to_question(db_path: str):
     validate_question_set_edition_constraint(session)
 
 
+def update_tournament_name_and_slug(session, year: int):
+    tournaments = session.query(Tournament).all()
+    for tournament in tournaments:
+        if not tournament.name.startswith(f"{year} ACF Regionals"):
+            tournament.name = f"{year} ACF Regionals @ {tournament.name}"
+        if not tournament.slug.startswith(f"{year}-acf-reg-"):
+            tournament.slug = f"{year}-acf-reg-{tournament.slug}"
+    session.commit()
+
+
+# %%
+def guess_year_from_db_path(db_path: str) -> int:
+    import re
+
+    # Extract the last part of the path
+    last_part = db_path.split("/")[-1].split(".")[0]
+
+    # Look for a 4-digit year (yyyy)
+    match = re.search(r"\b(\d{4})\b", last_part)
+    if match:
+        return int(match.group(1))
+
+    # Look for a 2-digit year (YY) and infer it as 20YY
+    match = re.search(r"(\d{2})\b", last_part)
+    if match and len(match.group(1)) == 2:
+        return 2000 + int(match.group(1))
+
+    raise ValueError(f"Could not infer year from db_path: {db_path}")
+
+
+# %%
+
 if __name__ == "__main__":
     db_paths = sys.argv[1:]
     for db_path in db_paths:
         print(f"\nAdding question_set_edition_id to {db_path}")
         add_question_set_edition_id_to_question(f"sqlite:///{db_path}")
+
+        # Update tournament name and slug
+        print(f"Updating tournament name and slug in {db_path}")
+        engine = create_engine(f"sqlite:///{db_path}")
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        try:
+            year = guess_year_from_db_path(db_path)
+            update_tournament_name_and_slug(session, year)
+        except ValueError:
+            print(f"Could not infer year from db_path: {db_path}")
+            print("Skipping tournament name and slug update")

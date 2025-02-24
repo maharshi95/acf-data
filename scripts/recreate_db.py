@@ -61,8 +61,11 @@ def prune_and_dump_db(input_db_path, output_db_path):
             # Copy table data
             input_cursor.execute(f"SELECT * FROM {table_name}")
             rows = input_cursor.fetchall()
+            if not rows:
+                print(f"No data found in table: {table_name}")
+            placeholders = ",".join(["?" for _ in range(len(rows[0]))])
             output_cursor.executemany(
-                f"INSERT INTO {new_table_name} VALUES ({','.join(['?' for _ in range(len(rows[0]))])})",
+                f"INSERT INTO {new_table_name} VALUES ({placeholders})",
                 rows,
             )
 

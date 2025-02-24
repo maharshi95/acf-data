@@ -193,17 +193,53 @@ def merge_spans_by_case_min_words(
     max_words: int = 40,
     verbose: bool = False,
 ):
+    """
+    Merges spans of text based on case and word count criteria.
+
+    This function takes a list of spans (start and end indices) and merges them
+    if certain conditions are met. The merging is influenced by the number of words
+    in the current span, the case of the starting character of the new span, and
+    the total number of words if the spans were merged.
+
+    Args:
+        text (str): The full text from which spans are derived.
+        spans (list[tuple[int, int]]): A list of tuples where each tuple contains
+            the start and end indices of a span in the text.
+        min_words (int, optional): The minimum number of words a span should have
+            to avoid merging. Defaults to 5.
+        max_words (int, optional): The maximum number of words allowed in a merged
+            span. Defaults to 40.
+        verbose (bool, optional): If True, prints detailed information about the
+            merging process. Defaults to False.
+
+    Returns:
+        list[tuple[int, int]]: A list of merged spans.
+    """
+    if not spans:
+        return []
+
     merged_spans = [spans[0]]
     for i in range(1, len(spans)):
         curr_start, curr_end = merged_spans[-1]
         new_start, new_end = spans[i]
+
+        # Ensure indices are within bounds
+        if new_start >= len(text) or new_end > len(text):
+            if verbose:
+                print(f"Span indices out of bounds: {(new_start, new_end)}")
+            continue
+
         curr_n_tokens = len(text[curr_start:curr_end].split())
         merged_n_tokens = len(text[curr_start:new_end].split())
 
         if (
-            curr_n_tokens <= min_words
-            or text[new_start] == "/"
-            or (text[new_start].islower() and merged_n_tokens <= max_words)
+            curr_n_tokens < min_words
+            or (new_start < len(text) and text[new_start] == "/")
+            or (
+                new_start < len(text)
+                and text[new_start].islower()
+                and merged_n_tokens <= max_words
+            )
         ):
             if verbose:
                 print(
