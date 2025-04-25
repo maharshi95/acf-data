@@ -9,8 +9,8 @@ from matplotlib import pyplot as plt
 from nltk.tokenize import PunktSentenceTokenizer
 from rich import print as rprint
 
-import models
-from structs import create_tossup_entry
+import core.models as models
+from core.structs import create_tossup_entry
 from utils import acf_sanitization, qb_tokenization
 
 qb_tokenization = importlib.reload(qb_tokenization)
@@ -18,7 +18,7 @@ acf_sanitization = importlib.reload(acf_sanitization)
 
 
 # %%
-session = models.create_session("data/acf-23-24.db")
+session = models.create_session("data/regs25.db")
 tossups = session.query(models.Tossup).all()
 tossups_by_id = {t.id: t for t in tossups}
 
@@ -42,13 +42,13 @@ for q in ques:
     q = q.replace("“", '"').replace("”", '"')
     print("Test Question:")
     print(textwrap.indent(textwrap.fill(q), "    "))
-    spans = qb_tokenization.get_clue_spans(q, tokenization_scheme="punkt")
+    spans = qb_tokenization.get_clue_spans(q, tokenization_scheme="blingfire")
     if not spans:
         print("No clue spans found")
     else:
         print("Clue Spans:")
         for i, s in enumerate(spans):
-            print(f"{i+1}: {q[s[0] : s[1]]}")
+            print(f"{i + 1}: {q[s[0] : s[1]]}")
     print()
 
 # %%
@@ -56,11 +56,11 @@ for q in ques:
 tossup_entries = [create_tossup_entry(t) for t in tossups]
 
 
-clues = []
+spans = []
 for i, t in enumerate(tossup_entries):
     for c in t.clues():
-        clues.append((c, i))
-clues_sorted = sorted(clues, key=lambda x: len(x[0].split()), reverse=True)
+        spans.append((c, i))
+clues_sorted = sorted(spans, key=lambda x: len(x[0].split()), reverse=True)
 
 # Distributions of # tokens per clue
 n_tokens_per_clue = [len(c.split()) for c, i in clues_sorted]
@@ -148,9 +148,9 @@ for c, i in clues_sorted[:20]:
         <h4 style="color: #2c3e50;">All Clues:</h4>
         <ol style="color: #34495e; font-size: 16px;">
     """
-    clues = tossup_entries[i].clues()
-    longest_clue = max(clues, key=len)
-    for j, cl in enumerate(clues):
+    spans = tossup_entries[i].clues()
+    longest_clue = max(spans, key=len)
+    for j, cl in enumerate(spans):
         if cl == longest_clue:
             html_output += (
                 f'<li style="background-color: #fffacd; padding: 5px;">{cl}</li>'
@@ -212,9 +212,9 @@ for t in tossups:
         bf_n_clues.append(len(bf_spans))
         punkt_n_clues.append(len(punkt_spans))
         assert len(bf_spans) > 0, f"No blingfire spans found for question: {t.id}"
-        assert (
-            len(punkt_spans) > 0
-        ), f"No punkt spans found for tossup: {t.id} \nQuestion: {question_text}"
+        assert len(punkt_spans) > 0, (
+            f"No punkt spans found for tossup: {t.id} \nQuestion: {question_text}"
+        )
     except RuntimeError as e:
         print("Error while tokenizing tossup ", t.id)
         print(textwrap.fill(question_text))
@@ -290,18 +290,18 @@ for example in examples:
 
     html_output += f"""
     <div class="tokenization-example">
-        <h3 class="tokenization-header">Tossup ID: {example['id']}</h3>
+        <h3 class="tokenization-header">Tossup ID: {example["id"]}</h3>
         <div class="tokenization-text">
-            <p>{example['question']}</p>
+            <p>{example["question"]}</p>
         </div>
         <div class="tokenization-comparison">
             <div class="tokenization-spans">
                 <h4 class="tokenization-header"># BlingFire Spans: {len(example["bf_spans"])}</h4>
-                {''.join(f'<p class="span-item">{example["question"][s:e]}</p>' for s, e in different_bf_spans)}
+                {"".join(f'<p class="span-item">{example["question"][s:e]}</p>' for s, e in different_bf_spans)}
             </div>
             <div class="tokenization-spans">
                 <h4 class="tokenization-header"># Punkt Spans: {len(example["punkt_spans"])}</h4>
-                {''.join(f'<p class="span-item">{example["question"][s:e]}</p>' for s, e in different_punkt_spans)}
+                {"".join(f'<p class="span-item">{example["question"][s:e]}</p>' for s, e in different_punkt_spans)}
             </div>
         </div>
     </div>
@@ -459,12 +459,12 @@ print(textwrap.fill(question_text))
 print("\nBlingFire Clues:")
 bf_spans = qb_tokenization.generate_blingfire_spans(question_text)
 for i, span in enumerate(bf_spans, 1):
-    print(f"{i}. {question_text[span[0]:span[1]]}")
+    print(f"{i}. {question_text[span[0] : span[1]]}")
 
 print("\nOrig Blingfire clues:")
 bf_spans = qb_tokenization.bling_tokenizer.span_tokenize(question_text)
 for i, span in enumerate(bf_spans, 1):
-    print(f"{i}. {question_text[span[0]:span[1]]}")
+    print(f"{i}. {question_text[span[0] : span[1]]}")
 
 # %%
 import re
@@ -476,11 +476,70 @@ for tossup_id, tossup in tossups_by_id.items():
         print()
         print(tossup_id)
         print(textwrap.fill(question_text))
-        clues = qb_tokenization.get_clue_spans(
+        spans = qb_tokenization.get_clue_spans(
             question_text, tokenization_scheme="best"
         )
-        for i, clue in enumerate(clues, 1):
-            print(f"{i}. {question_text[clue[0]:clue[1]]}")
+        for i, clue in enumerate(spans, 1):
+            print(f"{i}. {question_text[clue[0] : clue[1]]}")
         print("-" * 100)
+
+# %%
+
+line = "For 10 points, what theme was introduced to a spy series in Dr. No."
+tokens = qb_tokenization.bling_tokenizer.tokenize(line)
+spans = qb_tokenization.bling_tokenizer.get_spans_from_sents(line, tokens)
+rprint(tokens)
+# %%
+
+from utils.acf_sanitization import sanitize_question
+
+for t in tossups_by_id.values():
+    found = False
+    question_text = sanitize_question(t.question_text)
+    spans = qb_tokenization.get_clue_spans(
+        question_text, tokenization_scheme="blingfire"
+    )
+    for s, e in spans:
+        if e - s < 20:
+            found = True
+    if found:
+        print(t.id)
+        print(textwrap.fill(question_text))
+        for i, clue in enumerate(spans, 1):
+            print(f"{i}. {question_text[clue[0] : clue[1]]}")
+        print("-" * 100)
+
+# %%
+
+# use nltk to determine if given set of tokens is a sentence with a verb
+import nltk
+from nltk.corpus import wordnet as wn
+from nltk.tokenize import sent_tokenize, word_tokenize
+
+nltk.download("punkt")
+nltk.download("averaged_perceptron_tagger")
+
+
+def contains_verb(tokens):
+    pos_tags = nltk.pos_tag(tokens)
+    for word, tag in pos_tags:
+        if tag.startswith("VB"):  # Check if the tag is a verb
+            return True
+    return False
+
+
+sentences = [
+    "Krak! and Breath, Eyes, Memory.",
+    "She walked to the store.",
+    "Operating the store in the morning",
+]
+for sent in sentences:
+    tokens = word_tokenize(sent)
+    if contains_verb(tokens):
+        print(f"Sentence with verb: {sent}")
+    else:
+        print(f"Sentence without verb: {sent}")
+    print("-" * 100)
+
 
 # %%

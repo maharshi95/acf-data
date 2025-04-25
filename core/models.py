@@ -153,6 +153,7 @@ class Question(Base):
     question_set_edition = relationship(
         "QuestionSetEdition", back_populates="questions"
     )
+    bonuses = relationship("Bonus", back_populates="question")
 
     __table_args__ = (
         UniqueConstraint(
@@ -306,6 +307,51 @@ class Buzz(Base):
     )
 
 
+class Bonus(Base):
+    __tablename__ = "bonus"
+
+    id = Column(Integer, primary_key=True)
+    question_id = Column(Integer, ForeignKey("question.id"))
+    leadin = Column(String)
+    leadin_sanitized = Column(String)
+
+    question = relationship("Question", back_populates="bonuses")
+    bonus_parts = relationship("BonusPart", back_populates="bonus")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            "leadin",
+            name="uq_bonus_question_id_leadin",
+        ),
+    )
+
+
+class BonusPart(Base):
+    __tablename__ = "bonus_part"
+
+    id = Column(Integer, primary_key=True)
+    bonus_id = Column(Integer, ForeignKey("bonus.id"))
+    part_number = Column(Integer)
+    part = Column(String)
+    part_sanitized = Column(String)
+    answer = Column(String)
+    answer_sanitized = Column(String)
+    answer_primary = Column(String)
+    value = Column(Integer)
+    difficulty_modifier = Column(String)
+
+    bonus = relationship("Bonus", back_populates="bonus_parts")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "bonus_id",
+            "part_number",
+            name="uq_bonus_part_bonus_id_part_number",
+        ),
+    )
+
+
 event.listen(PacketQuestion, "before_insert", validate_packet_question)
 event.listen(PacketQuestion, "before_update", validate_packet_question)
 
@@ -323,6 +369,8 @@ all_classes = [
     Player,
     Game,
     Buzz,
+    Bonus,
+    BonusPart,
 ]
 
 

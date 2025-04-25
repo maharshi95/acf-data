@@ -63,6 +63,25 @@ class QuestionMetadata(JsonStruct):
     difficulty: str
     question_set: str
     packet: str
+    human_buzz_positions: list[tuple[int, int]] = []
+
+
+class BonusQuestion(JsonStruct):
+    qid: str
+    leadin: str
+    parts: list[dict]
+    metadata: QuestionMetadata
+
+
+class BonusPart(JsonStruct):
+    number: int
+    part: str
+    answer: str
+    answer_primary: str
+    clean_answers: list[str]
+    explanation: str
+    value: int
+    difficulty_modifier: str
 
 
 class QuizbowlQuestion(JsonStruct):
@@ -94,51 +113,39 @@ class ProgressiveClue(JsonStruct):
     metadata: QuestionMetadata
 
 
-def create_tossup_entry(tossup: models.Tossup, prefix="acf"):
-    question_sanitized = acf_sanitization.sanitize_question(tossup.question_text)
-    clue_spans = qb_tokenization.get_clue_spans(
-        question_sanitized, tokenization_scheme="blingfire"
-    )
-    clean_answers, explanation = acf_sanitization.get_clean_answers(
-        tossup.answer_sanitized
-    )
-    question = tossup.question
-    pq = question.packet_questions[0]
-    qset = question.question_set_edition.question_set
-    qid = f"{pq.packet_id}-{pq.question_number}"
-    return QuizbowlQuestion(
-        qid=f"{prefix}-{qid}",
-        answer=tossup.answer_sanitized,
-        clean_answers=clean_answers,
-        explanation=explanation,
-        answer_primary=tossup.answer_primary,
-        clue_spans=clue_spans,
-        question=question_sanitized,
-        metadata=QuestionMetadata(
-            category=question.category_slug,
-            subcategory=[question.subcategory_slug],
-            category_main=question.category_main_slug,
-            category_full=question.category_full,
-            difficulty=qset.difficulty.split()[0],
-            question_set=qset.slug,
-            packet=question.packet_questions[0].packet.name,
-        ),
-    )
+# model-id for the config-name of the huggingface dataset
+# dataset-id is the split name of the huggingface dataset
+# Example: load_dataset("umdclip/model-outputs", config_name="gpt-4o-aggressive", split="co24")
+class ModelOutputs(JsonStruct):
+    qid: str
+    run_id: str  # {qid}#{run_number}
+    answer_primary: str
+    clean_answers: list[str]
+    guess: str
+    confidence: float
+    buzz: bool
+    explanation: str = ""
 
 
-def create_progressive_clues(qb_question: QuizbowlQuestion):
-    clues = []
-    for i, span in enumerate(qb_question.clue_spans, 1):
-        clue = ProgressiveClue(
-            qc_id=f"{qb_question.qid}_{i}",
-            clue_text=qb_question.question[span[0] : span[1]].strip(),
-            clean_answers=qb_question.clean_answers,
-            orig_qid=qb_question.qid,
-            n_clues=i,
-            orig_question=qb_question.question,
-            orig_answer_string=qb_question.answer,
-            clue_spans=qb_question.clue_spans,
-            metadata=qb_question.metadata,
-        )
-        clues.append(clue)
-    return clues
+# We get this by post-processing the Model Outputs.
+# Avoid iterating though the ModelOutputs dataset for preparing the leaderboard.
+class ModelResults(JsonStruct):
+    model_id: str
+    model_name: str
+    dataset_id: str
+
+    # Metrics:
+    buzz_accuracy: float
+    win_rate_human: float
+    win_rate_model: float
+    explanation_helpfulness: float
+    explanation_distraction: float
+
+    # An overconfident model can have high helpfulness and high distraction.
+
+    # A highly skeptic model has lower rate of answer flipping.
+
+    # To compute the explanation metrics, we need to finalize a small set of models:
+    # llama-3.1-8b-instruct
+    # mistral
+    # gpt-3.5-turbo

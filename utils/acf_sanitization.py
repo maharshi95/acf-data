@@ -128,12 +128,20 @@ def sanitize_question(q):
     return q.strip()
 
 
+def sanitize_answer(a):
+    a = convert_html_symbols(a)
+    a = remove_tags(a)
+    a = remove_pgs(a)
+    a = remove_power_pos(a)
+    return a.strip()
+
+
 def get_buzz_offset(q):
     _, inst = remove_instruction(q)
     return len(inst.split())
 
 
-def tokenize(q):
+def sanitokenize(q):
     return sanitize_question(q).split()
 
 
@@ -205,6 +213,19 @@ def get_clean_answers(raw_ans_text: str):
 
     answers = {*map(normalize_braces, answers)} - {""}
     return list(answers), explanation
+
+
+def get_short_clean_answers(raw_answer_string: str, max_tokens: int = 10):
+    answer = (
+        raw_answer_string.replace("<b><u>", "{")
+        .replace("<u><b>", "{")
+        .replace("</u></b>", "}")
+        .replace("</b></u>", "}")
+    )
+    answer = sanitize_answer(answer)
+    clean_answers, explanation = get_clean_answers(answer)
+    clean_answers = [a for a in clean_answers if len(a.split()) <= max_tokens]
+    return clean_answers, explanation
 
 
 if __name__ == "__main__":

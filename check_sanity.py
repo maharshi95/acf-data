@@ -5,7 +5,7 @@ from typing import NamedTuple
 
 from IPython.display import HTML, display
 
-import models
+import core.models as models
 from utils import acf_sanitization
 
 acf_sanitization = importlib.reload(acf_sanitization)
@@ -57,7 +57,7 @@ def search_and_highlight_pattern(pattern: str, raw: bool = False, limit: int = 1
     print(f"Total matches found: {total_outputs}")
 
     html_output = f"""
-    <h2>Searching for <code style="background-color: #e0e0e0; padding: 2px 4px; border-radius: 4px;">{pattern}</code> in <code style="background-color: #e0e0e0; padding: 2px 4px; border-radius: 4px;">{'raw' if raw else 'sanitized'}</code> tossup questions:</h3>
+    <h2>Searching for <code style="background-color: #e0e0e0; padding: 2px 4px; border-radius: 4px;">{pattern}</code> in <code style="background-color: #e0e0e0; padding: 2px 4px; border-radius: 4px;">{"raw" if raw else "sanitized"}</code> tossup questions:</h3>
     """
 
     html_output += "\n".join(html_outputs[:limit])
