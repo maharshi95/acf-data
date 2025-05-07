@@ -1,11 +1,117 @@
+# %%
 import argparse
 import json
 import os
 import re
+from typing import TypedDict
 
 import fitz
+from datasets import Dataset
+from tqdm import tqdm
 
-StrDict = dict[str, str]
+from core.structs import BonusPart, BonusQuestion, QuestionMetadata, QuizbowlQuestion
+from utils import acf_sanitization, qb_tokenization
+from utils.acf_sanitization import squish_whitespace
+from utils.tossups import prepare_token_indices
+
+PREFIX = "2024-iqbt-nats"
+
+
+class BonusPartDict(TypedDict):
+    part_number: int
+    part_text: str
+    part_answer: str
+
+
+class BonusQuestionDict(TypedDict):
+    question_number: int
+    lead_in: str
+    category: str
+    parts: list[BonusPartDict]
+
+
+class TossupQuestionDict(TypedDict):
+    question_number: int
+    question_raw: str
+    answer_raw: str
+    category: str
+
+
+def transform_bonus_question(
+    bonus: BonusQuestionDict,
+    qid_prefix: str,
+    question_set: str,
+    packet_number: int,
+    packet_name: str,
+) -> BonusQuestion:
+    parts = []
+    for part in bonus["parts"]:
+        raw_answer_str = squish_whitespace(part["part_answer"])
+        answers = acf_sanitization.get_short_clean_answers(raw_answer_str)
+        part_text = acf_sanitization.sanitize_question(part["part_text"])
+
+        bonus_part = BonusPart(
+            number=part["part_number"],
+            part=part_text,
+            answer=raw_answer_str,
+            answer_primary=answers["primary"],
+            clean_answers=answers["clean"],
+            explanation=answers["explanation"],
+            value=10,
+            difficulty_modifier="",
+        )
+        parts.append(bonus_part)
+
+    leadin = acf_sanitization.sanitize_question(bonus["lead_in"])
+    return BonusQuestion(
+        qid=f"{qid_prefix}-{packet_number:02d}-{bonus['question_number']}",
+        leadin=leadin,
+        parts=parts,
+        metadata=QuestionMetadata(
+            category=bonus["category"],
+            subcategory=[],
+            category_main="",
+            category_full=bonus["category"],
+            difficulty="",
+            question_set=question_set,
+            packet=packet_name,
+        ),
+    )
+
+
+def transform_tossup_question(
+    tossup: TossupQuestionDict,
+    qid_prefix: str,
+    question_set: str,
+    packet_number: int,
+    packet_name: str,
+) -> QuizbowlQuestion:
+    answer_raw = squish_whitespace(tossup["answer_raw"])
+    question_raw = tossup["question_raw"]
+    answers = acf_sanitization.get_short_clean_answers(answer_raw)
+    question_sanitized = acf_sanitization.sanitize_question(question_raw)
+    clue_spans = qb_tokenization.get_clue_spans(
+        question_sanitized, tokenization_scheme="blingfire"
+    )
+    return QuizbowlQuestion(
+        qid=f"{qid_prefix}-{packet_number:02d}-{tossup['question_number']}",
+        answer=answer_raw,
+        clean_answers=answers["clean"],
+        explanation=answers["explanation"],
+        answer_primary=answers["primary"],
+        clue_spans=clue_spans,
+        question=question_sanitized,
+        metadata=QuestionMetadata(
+            category=tossup["category"],
+            subcategory=[],
+            category_main="",
+            category_full=tossup["category"],
+            difficulty="",
+            question_set=question_set,
+            packet=packet_name,
+            human_buzz_positions=[],
+        ),
+    )
 
 
 def extract_with_html_tags(pdf_path: str) -> str:
@@ -59,7 +165,7 @@ def extract_with_html_tags(pdf_path: str) -> str:
     return "\n".join(out_lines)
 
 
-def parse_tossup_block(block: str) -> list[StrDict]:
+def parse_tossup_block(block: str) -> list[TossupQuestionDict]:
     # split on question numbers at start of line: "1. ", "2. ", …
     raw_qs = re.split(r"\n(?=\d+\.\s)", block)
 
@@ -82,18 +188,18 @@ def parse_tossup_block(block: str) -> list[StrDict]:
             # skip anything that doesn't match
             continue
 
-        q = {
-            "question_number": int(m.group("number")),
-            "question_raw": m.group("question").strip(),
-            "answer_raw": m.group("answer").strip(),
-            "category": m.group("category").split("\n")[0].strip(),
-        }
+        q = TossupQuestionDict(
+            question_number=int(m.group("number")),
+            question_raw=m.group("question"),
+            answer_raw=m.group("answer"),
+            category=m.group("category").split("\n")[0].strip(),
+        )
         questions.append(q)
 
     return questions
 
 
-def parse_bonus_block(block: str) -> list[StrDict]:
+def parse_bonus_block(block: str) -> list[BonusQuestionDict]:
     """
     Parse a block of bonus questions, extracting the lead-in, parts, and answers.
 
@@ -118,12 +224,12 @@ def parse_bonus_block(block: str) -> list[StrDict]:
             continue
 
         # Parse the lead-in (first part)
-        lead_in = parts[0]
+        raw_question_str = parts[0]
         m = re.match(
             r"(?P<number>\d+)\.\s+"  # question number
             r"(?P<lead_in>.*?)"  # lead-in text (non-greedy)
             r"For\s+10\s+points\s+each:",  # points indicator
-            lead_in,
+            raw_question_str,
             flags=re.S | re.I,
         )
 
@@ -132,6 +238,7 @@ def parse_bonus_block(block: str) -> list[StrDict]:
 
         # Parse the bonus parts
         bonus_parts = []
+        part_number = 0
         for part in parts[1:]:
             part_match = re.match(
                 r"\[10\]\s+"  # points marker
@@ -141,23 +248,25 @@ def parse_bonus_block(block: str) -> list[StrDict]:
                 flags=re.S | re.I,
             )
             if part_match:
-                bonus_parts.append(
-                    {
-                        "part_text": part_match.group("part_text").strip(),
-                        "part_answer": part_match.group("part_answer").strip(),
-                    }
+                part_number += 1
+                bonus_part = BonusPartDict(
+                    part_number=part_number,
+                    part_text=part_match.group("part_text"),
+                    part_answer=part_match.group("part_answer"),
                 )
+                bonus_parts.append(bonus_part)
 
         # Extract category from the last part
         category_match = re.search(r"Category:\s*(.+)$", raw, flags=re.S | re.I)
         category = category_match.group(1).strip() if category_match else ""
 
-        q = {
-            "question_number": int(m.group("number")),
-            "lead_in": m.group("lead_in").strip(),
-            "category": category,
-            "parts": bonus_parts,
-        }
+        # Extract lead-in
+        q = BonusQuestionDict(
+            question_number=int(m.group("number")),
+            lead_in=m.group("lead_in"),
+            category=category,
+            parts=bonus_parts,
+        )
         questions.append(q)
 
     return questions
@@ -165,7 +274,7 @@ def parse_bonus_block(block: str) -> list[StrDict]:
 
 def parse_packet_content(
     html: str, ignores: list[str] = []
-) -> dict[str, list[StrDict]]:
+) -> dict[str, list[TossupQuestionDict] | list[BonusQuestionDict]]:
     """
     Given the full HTML-tagged text of the packet, returns a tuple of (tossups, bonuses):
     tossups: [{
@@ -238,45 +347,167 @@ packets = {
 }
 
 
-def main(filepath: str, packet_name: str):
+def main(
+    filepath: str,
+    question_set: str,
+    packet_number: int,
+    packet_name: str,
+    qid_prefix: str = PREFIX,
+):
     text = extract_with_html_tags(filepath)
     text = text.replace(terms, "").strip()
     packet_content = parse_packet_content(text, [terms])
+    tossups = []
+    bonuses = []
     for t in packet_content["tossups"]:
-        t["packet_name"] = packet_name
+        t = transform_tossup_question(
+            t, qid_prefix, question_set, packet_number, packet_name
+        ).to_dict()
+        clue_token_indices, run_token_indices = prepare_token_indices(
+            t["question"], t["clue_spans"]
+        )
+        t["clue_token_indices"] = clue_token_indices
+        t["run_indices"] = run_token_indices
+        tossups.append(t)
     for b in packet_content["bonuses"]:
-        b["packet_name"] = packet_name
-    return packet_content
+        b = transform_bonus_question(
+            b, qid_prefix, question_set, packet_number, packet_name
+        )
+        bonuses.append(b.to_dict())
+    return {"tossups": tossups, "bonuses": bonuses}
+
+
+def write_dataset(
+    dataset_entries: dict[str, list[TossupQuestionDict] | list[BonusQuestionDict]],
+    output_dir: str,
+    hf_repo_id: str | None = None,
+):
+    for qtype in ["tossups", "bonuses"]:
+        out_filepath = os.path.join(output_dir, f"{qtype}.jsonl")
+        os.makedirs(os.path.dirname(out_filepath), exist_ok=True)
+        with open(out_filepath, "w") as f:
+            for q in dataset_entries[qtype]:
+                f.write(json.dumps(q) + "\n")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--filepath",
-        "-f",
+        "--input",
         type=str,
         required=True,
-        help="Path to the packet file in pdf format",
+        help="Path to the packet file in pdf format, or a directory containing multiple packet files",
     )
     parser.add_argument(
-        "--packet", "-p", type=str, default=None, help="Name of the packet"
+        "--packet",
+        "-p",
+        type=str,
+        default=None,
+        help="Name of the packet. Should not be provided if --input is a directory. Optional otherwise.",
+    )
+    parser.add_argument(
+        "--question-set",
+        "-q",
+        type=str,
+        default="2024-iqbt-nationals",
+        help="Question set name",
+    )
+    parser.add_argument(
+        "--packet-id",
+        "-i",
+        type=str,
+        default=None,
+        help="Packet ID. Should not be set if --input is a directory, required otherwise.",
     )
     parser.add_argument(
         "--output-dir",
         "-o",
         type=str,
-        default="data/",
+        default="data/datasets/",
         help="Path to the output directory where the dataset will be saved",
     )
+
+    parser.add_argument(
+        "--hf-repo-id",
+        type=str,
+        default=None,
+        help="Hugging Face repository ID. If provided, the dataset will be pushed to the Hugging Face Hub.",
+    )
     args = parser.parse_args()
-    packet_name = args.packet or args.filepath.split("/")[-1].rsplit(".", 1)[0]
-    packet_content = main(args.filepath, packet_name)
-    for qtype in ["tossups", "bonuses"]:
-        out_filepath = os.path.join(args.output_dir, f"{packet_name}/{qtype}.jsonl")
-        os.makedirs(os.path.dirname(out_filepath), exist_ok=True)
-        with open(out_filepath, "w") as f:
-            for q in packet_content[qtype]:
-                f.write(json.dumps(q) + "\n")
+
+    output_dir = os.path.join(args.output_dir, args.question_set)
+
+    # Validate arguments
+    if not os.path.exists(args.input):
+        raise ValueError(f"Input file or directory {args.input} does not exist")
+
+    if os.path.isfile(args.input):
+        if not args.input.endswith(".pdf"):
+            raise ValueError(f"Input file {args.input} is not a PDF")
+
+        if args.packet_id is None:
+            raise ValueError(
+                "Packet ID must be provided if input is a single packet file"
+            )
+        if args.hf_repo_id is not None:
+            raise ValueError(
+                "Currently, we do not support pushing to the Hugging Face Hub when "
+                "input is a single packet file. Please put all the packets in a "
+                "directory and run the script on the directory to create a single "
+                "dataset and push that to the Hub."
+            )
+        packet_name = args.packet or args.filepath.split("/")[-1].rsplit(".", 1)[0]
+        packet_content = main(
+            args.filepath, args.packet_id, args.question_set, packet_name
+        )
+        write_dataset(packet_content, output_dir)
+
+    else:
+        if args.packet_id is not None:
+            raise ValueError("Packet ID should not be provided if input is a directory")
+        if args.packet is not None:
+            raise ValueError(
+                "Packet name should not be provided if input is a directory"
+            )
+
+        filenames = os.listdir(args.input)
+        filenames.sort()
+
+        dataset_entries = {"bonuses": [], "tossups": []}
+
+        for packet_idx, filename in tqdm(
+            enumerate(filenames, start=1),
+            total=len(filenames),
+            desc="Processing packet files",
+        ):
+            filepath = os.path.join(args.input, filename)
+            packet_name = filename.split(".")[0]
+
+            if not filepath.endswith(".pdf"):
+                print(f"Skipping {filepath} because it is not a PDF")
+                continue
+            packet_id = filepath.split(".")[0]
+            packet_content = main(
+                filepath,
+                question_set=args.question_set,
+                packet_number=packet_idx,
+                packet_name=packet_name,
+            )
+            dataset_entries["bonuses"].extend(packet_content["bonuses"])
+            dataset_entries["tossups"].extend(packet_content["tossups"])
+
+        write_dataset(dataset_entries, output_dir)
+
+        if args.hf_repo_id is not None:
+            tossup_dataset = Dataset.from_list(dataset_entries["tossups"])
+            tossup_dataset.push_to_hub(
+                f"{args.hf_repo_id}", config_name="tossups", split="eval"
+            )
+
+            bonus_dataset = Dataset.from_list(dataset_entries["bonuses"])
+            bonus_dataset.push_to_hub(
+                f"{args.hf_repo_id}", config_name="bonuses", split="eval"
+            )
 
 
 # %%

@@ -1,5 +1,4 @@
-# %%
-from datasets import Dataset, load_dataset
+from datasets import Dataset
 
 from core import models
 from core.structs import (
@@ -8,25 +7,7 @@ from core.structs import (
     QuizbowlQuestion,
 )
 from utils import acf_sanitization, qb_tokenization
-
-# %%
-
-
-def prepare_run_indices(e, run_length: int = 7):
-    clue_token_indices = []
-    for start, end in e["clue_spans"]:
-        tokens = e["question"][:end].split()
-        clue_token_indices.append(len(tokens) - 1)
-    run_indices = [run_length - 1]
-    ptr = 0
-    while ptr < len(clue_token_indices):
-        new_index = run_indices[-1] + run_length
-        if new_index < clue_token_indices[ptr]:
-            run_indices.append(new_index)
-        else:
-            run_indices.append(clue_token_indices[ptr])
-            ptr += 1
-    return {"clue_token_indices": clue_token_indices, "run_indices": run_indices}
+from utils.tossups import prepare_token_indices
 
 
 def create_tossup_entry(tossup: models.Tossup, prefix="acf"):
@@ -34,7 +15,7 @@ def create_tossup_entry(tossup: models.Tossup, prefix="acf"):
     clue_spans = qb_tokenization.get_clue_spans(
         question_sanitized, tokenization_scheme="blingfire"
     )
-    clean_answers, explanation = acf_sanitization.get_short_clean_answers(tossup.answer)
+    answers = acf_sanitization.get_short_clean_answers(tossup.answer)
     question = tossup.question
     pq = question.packet_questions[0]
     qset = question.question_set_edition.question_set
@@ -46,8 +27,8 @@ def create_tossup_entry(tossup: models.Tossup, prefix="acf"):
     return QuizbowlQuestion(
         qid=f"{prefix}-{qid}",
         answer=tossup.answer_sanitized,
-        clean_answers=clean_answers,
-        explanation=explanation,
+        clean_answers=answers["clean"],
+        explanation=answers["explanation"],
         answer_primary=tossup.answer_primary,
         clue_spans=clue_spans,
         question=question_sanitized,
@@ -105,7 +86,16 @@ def create_and_push_dataset(db_path: str, prefix: str):
         f"mgor/{prefix}-tossups", config_name="progressive-clues", split="eval"
     )
 
-    tossups_dataset = questions_dataset.map(prepare_run_indices)
+    def inject_token_indices(x):
+        clue_indices, run_indices = prepare_token_indices(
+            x["question"], x["clue_spans"], run_length=7
+        )
+        return {
+            "clue_token_indices": clue_indices,
+            "run_indices": run_indices,
+        }
+
+    tossups_dataset = questions_dataset.map(inject_token_indices)
     tossups_dataset.push_to_hub(
         f"umdclip/{prefix}-tossups",
         split="eval",

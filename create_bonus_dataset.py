@@ -7,7 +7,7 @@ from core.structs import (
     BonusQuestion,
     QuestionMetadata,
 )
-from utils import acf_sanitization, qb_tokenization
+from utils import acf_sanitization
 
 
 def create_bonus_entry(bonus: models.Bonus, prefix="acf"):
@@ -19,17 +19,15 @@ def create_bonus_entry(bonus: models.Bonus, prefix="acf"):
     parts = []
     for part in bonus.bonus_parts:
         part_text = acf_sanitization.sanitize_answer(part.part)
-        clean_answers, explanation = acf_sanitization.get_short_clean_answers(
-            part.answer
-        )
+        answers = acf_sanitization.get_short_clean_answers(part.answer)
         parts.append(
             BonusPart(
                 number=part.part_number,
                 part=part_text,
                 answer=part.answer_sanitized,
                 answer_primary=part.answer_primary,
-                clean_answers=clean_answers,
-                explanation=explanation,
+                clean_answers=answers["clean"],
+                explanation=answers["explanation"],
                 value=part.value,
                 difficulty_modifier=part.difficulty_modifier,
             )

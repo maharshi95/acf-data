@@ -41,6 +41,10 @@ def remove_power_pos(q):
     return q.replace("(*)", "")
 
 
+def squish_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def remove_pgs(q):
     # Remove Pronunciation Guides
     # This function catches the following patterns:
@@ -119,6 +123,7 @@ def remove_tags(q):
 
 
 def sanitize_question(q):
+    q = squish_whitespace(q)
     q, _ = remove_instruction(q)
     q = convert_html_symbols(q)
     q = remove_mod_instructions(q)
@@ -129,6 +134,7 @@ def sanitize_question(q):
 
 
 def sanitize_answer(a):
+    a = squish_whitespace(a)
     a = convert_html_symbols(a)
     a = remove_tags(a)
     a = remove_pgs(a)
@@ -156,7 +162,8 @@ def split_explanation(line: str):
     return line, ""
 
 
-def get_clean_answers(raw_ans_text: str):
+def get_clean_answers(raw_ans_text: str, primary: bool = True):
+    raw_ans_text = squish_whitespace(raw_ans_text)
     answer_line, explanation = split_explanation(raw_ans_text)
 
     for c in ["\\“", "\\”", '\\"']:
@@ -212,20 +219,24 @@ def get_clean_answers(raw_ans_text: str):
             answers.extend(map(normalize_braces, braced))
 
     answers = {*map(normalize_braces, answers)} - {""}
-    return list(answers), explanation
+    if primary:
+        return gold.strip(), list(answers)[0], explanation
+    else:
+        return list(answers), explanation
 
 
 def get_short_clean_answers(raw_answer_string: str, max_tokens: int = 10):
-    answer = (
-        raw_answer_string.replace("<b><u>", "{")
-        .replace("<u><b>", "{")
-        .replace("</u></b>", "}")
-        .replace("</b></u>", "}")
-    )
+    answer = re.sub(r"<u><b>|<b><u>", "<b>", raw_answer_string)
+    answer = re.sub(r"</u></b>|</b></u>", "</b>", answer)
+    answer = answer.replace("<b>", "{").replace("</b>", "}")
     answer = sanitize_answer(answer)
-    clean_answers, explanation = get_clean_answers(answer)
+    answer_primary, clean_answers, explanation = get_clean_answers(answer, primary=True)
     clean_answers = [a for a in clean_answers if len(a.split()) <= max_tokens]
-    return clean_answers, explanation
+    return {
+        "primary": answer_primary,
+        "clean": clean_answers,
+        "explanation": explanation,
+    }
 
 
 if __name__ == "__main__":
