@@ -220,7 +220,7 @@ def get_clean_answers(raw_ans_text: str, primary: bool = True):
 
     answers = {*map(normalize_braces, answers)} - {""}
     if primary:
-        return gold.strip(), list(answers)[0], explanation
+        return gold.strip(), list(answers), explanation
     else:
         return list(answers), explanation
 
@@ -231,6 +231,7 @@ def get_short_clean_answers(raw_answer_string: str, max_tokens: int = 10):
     answer = answer.replace("<b>", "{").replace("</b>", "}")
     answer = sanitize_answer(answer)
     answer_primary, clean_answers, explanation = get_clean_answers(answer, primary=True)
+    print(answer_primary, clean_answers, explanation)
     clean_answers = [a for a in clean_answers if len(a.split()) <= max_tokens]
     return {
         "primary": answer_primary,
