@@ -51,6 +51,9 @@ class JsonStruct(msgspec.Struct, omit_defaults=True):
         json_str = msgspec.json.encode(self)
         return msgspec.json.decode(json_str)
 
+    def to_json(self):
+        return msgspec.json.encode(self)
+
     def asdict(self):
         return msgspec.structs.asdict(self)
 
@@ -66,29 +69,29 @@ class QuestionMetadata(JsonStruct):
     human_buzz_positions: list[tuple[int, int]] = []
 
 
-class BonusQuestion(JsonStruct):
-    qid: str
-    leadin: str
-    parts: list[dict]
-    metadata: QuestionMetadata
-
-
 class BonusPart(JsonStruct):
     number: int
-    part: str
-    answer: str
+    question: str
+    answer_line: str
     answer_primary: str
     clean_answers: list[str]
     explanation: str
-    value: int
-    difficulty_modifier: str
+    value: int  # points value of the part question (usually 10 or 20)
+    difficulty_modifier: str  # This is usally "e", "m", or "h" (easy, medium, hard)
 
 
-class QuizbowlQuestion(JsonStruct):
+class QBBonusQuestion(JsonStruct):
+    qid: str
+    leadin: str
+    parts: list[BonusPart]
+    metadata: QuestionMetadata
+
+
+class QBTossupQuestion(JsonStruct):
     qid: str
     question: str
-    answer: str
-    answer_primary: str
+    answer_line: str  # The raw answer line with html markers from the database
+    answer_primary: str  # t
     clean_answers: list[str]
     explanation: str
     clue_spans: list[tuple[int, int]]

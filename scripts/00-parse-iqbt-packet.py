@@ -9,7 +9,7 @@ import fitz
 from datasets import Dataset
 from tqdm import tqdm
 
-from core.structs import BonusPart, BonusQuestion, QuestionMetadata, QuizbowlQuestion
+from core.structs import BonusPart, QBBonusQuestion, QBTossupQuestion, QuestionMetadata
 from utils import acf_sanitization, qb_tokenization
 from utils.acf_sanitization import squish_whitespace
 from utils.tossups import prepare_token_indices
@@ -43,7 +43,7 @@ def transform_bonus_question(
     question_set: str,
     packet_number: int,
     packet_name: str,
-) -> BonusQuestion:
+) -> QBBonusQuestion:
     parts = []
     for part in bonus["parts"]:
         raw_answer_str = squish_whitespace(part["part_answer"])
@@ -52,7 +52,7 @@ def transform_bonus_question(
 
         bonus_part = BonusPart(
             number=part["part_number"],
-            part=part_text,
+            question=part_text,
             answer=raw_answer_str,
             answer_primary=answers["primary"],
             clean_answers=answers["clean"],
@@ -63,7 +63,7 @@ def transform_bonus_question(
         parts.append(bonus_part)
 
     leadin = acf_sanitization.sanitize_question(bonus["lead_in"])
-    return BonusQuestion(
+    return QBBonusQuestion(
         qid=f"{qid_prefix}-{packet_number:02d}-{bonus['question_number']}",
         leadin=leadin,
         parts=parts,
@@ -85,7 +85,7 @@ def transform_tossup_question(
     question_set: str,
     packet_number: int,
     packet_name: str,
-) -> QuizbowlQuestion:
+) -> QBTossupQuestion:
     answer_raw = squish_whitespace(tossup["answer_raw"])
     question_raw = tossup["question_raw"]
     answers = acf_sanitization.get_short_clean_answers(answer_raw)
@@ -93,7 +93,7 @@ def transform_tossup_question(
     clue_spans = qb_tokenization.get_clue_spans(
         question_sanitized, tokenization_scheme="blingfire"
     )
-    return QuizbowlQuestion(
+    return QBTossupQuestion(
         qid=f"{qid_prefix}-{packet_number:02d}-{tossup['question_number']}",
         answer=answer_raw,
         clean_answers=answers["clean"],
