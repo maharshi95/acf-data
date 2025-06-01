@@ -23,6 +23,9 @@ class DBClient:
     def __call__(self, query: str):
         return self.Q(query)
 
+    def list_tables(self):
+        return self.Q("SELECT name FROM sqlite_master WHERE type='table';")["name"]
+
     def get_table(self, table_name: str, n_rows: int = -1):
         q = f"SELECT * FROM {table_name}"
         if n_rows > 0:
@@ -110,48 +113,45 @@ def check_subset(entity_name: str, db1: DBClient, db2: DBClient):
 #     check_subset(entity_name, regs24, sst24)
 
 
-def list_dups(db: DBClient, table_name: str, columns: list[str]):
-    try:
-        dups = db.list_duplicates(table_name, columns)
-    except Exception as e:
-        print(f"Error listing duplicates for {table_name} in {db.path}: {e}")
-        return
-    if len(dups) > 0:
-        print_table(dups)
-
-
-nats24 = DBClient("./data/nats24.db")
-sst24 = DBClient("./data/sst-23-24-cleaned.db")
-acf24 = DBClient("./data/acf-23-24.db")
-
-
-for db in [sst24, nats24, acf24]:
-    print("Listing duplicates for", db.path)
-    list_dups(db, "team", ["slug", "tournament_id"])
-    list_dups(db, "player", ["slug", "team_id"])
-
-slug_name_columns = [
-    ("category_slug", "category"),
-    ("subcategory_slug", "subcategory"),
-    ("category_main_slug", "category_main"),
-]
-
-
-slug_map = defaultdict(set)
-
-for db in [sst24, nats24]:
-    for slug_col, name_col in slug_name_columns:
-        df = db.get_table("question")
-        for name, slug in df[[name_col, slug_col]].values:
-            slug_map[slug].add(name)
-
 # %%
-for slug, names in slug_map.items():
-    if len(names) > 1:
-        print(f"{slug: >20} -> {names}")
+if __name__ == "__main__":
 
-# %%
-if name == "__main__":
+    def list_dups(db: DBClient, table_name: str, columns: list[str]):
+        try:
+            dups = db.list_duplicates(table_name, columns)
+        except Exception as e:
+            print(f"Error listing duplicates for {table_name} in {db.path}: {e}")
+            return
+        if len(dups) > 0:
+            print_table(dups)
+
+    nats24 = DBClient("./data/nats24.db")
+    sst24 = DBClient("./data/sst-23-24-cleaned.db")
+    acf24 = DBClient("./data/acf-23-24.db")
+
+    for db in [sst24, nats24, acf24]:
+        print("Listing duplicates for", db.path)
+        list_dups(db, "team", ["slug", "tournament_id"])
+        list_dups(db, "player", ["slug", "team_id"])
+
+    slug_name_columns = [
+        ("category_slug", "category"),
+        ("subcategory_slug", "subcategory"),
+        ("category_main_slug", "category_main"),
+    ]
+
+    slug_map = defaultdict(set)
+
+    for db in [sst24, nats24]:
+        for slug_col, name_col in slug_name_columns:
+            df = db.get_table("question")
+            for name, slug in df[[name_col, slug_col]].values:
+                slug_map[slug].add(name)
+
+    # %%
+    for slug, names in slug_map.items():
+        if len(names) > 1:
+            print(f"{slug: >20} -> {names}")
     game_df = nats24(queries.GAME_INFO_QUERY)
     assert game_df["id"].nunique() == game_df.shape[0]
     game_df = game_df.set_index("id")

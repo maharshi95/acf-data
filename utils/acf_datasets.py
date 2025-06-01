@@ -64,13 +64,13 @@ def create_tossup_entry(tossup: models.Tossup, prefix="acf"):
     question = tossup.question
     pq = question.packet_questions[0]
     qset = question.question_set_edition.question_set
-    qid = f"{pq.packet_id}-{pq.question_number}"
+    qid = f"t-{pq.packet_id}-{pq.question_number}"
     buzz_offset = acf_sanitization.get_buzz_offset(tossup.question_text)
     human_buzz_positions = sorted(
         [(b.buzz_position - buzz_offset, b.value) for b in tossup.buzzes]
     )
     return QBTossupQuestion(
-        qid=f"t-{prefix}-{qid}",
+        qid=f"{prefix}-{qid}",
         answer_line=tossup.answer,
         answer_primary=tossup.answer_primary,
         explanation=answers["explanation"],

@@ -37,6 +37,12 @@ def parse_arguments():
         help="Repository ID on HuggingFace Hub without the username/org prefix.",
     )
     parser.add_argument(
+        "--config-name",
+        "-c",
+        default="default",
+        help="Optional config name for the dataset. If not provided, it will be the default config name.",
+    )
+    parser.add_argument(
         "--org",
         "-o",
         required=False,
@@ -90,7 +96,9 @@ if __name__ == "__main__":
         dataset = create_bonus_dataset(args.db_path, args.prefix)
     else:
         dataset = create_tossup_dataset(args.db_path, args.prefix)
-    dataset.push_to_hub(repo_id, split="eval", private=not args.public)
+    dataset.push_to_hub(
+        repo_id, args.config_name, split="eval", private=not args.public
+    )
 
 # %%
 
@@ -99,6 +107,19 @@ if __name__ == "__main__":
 
 """
 Example usage:
+python create_dataset.py \
+    --db-path data/dbs/nats25.db --type tossup \
+    --prefix acf-nats25 \
+    --repo-id acf-nats25-tossups \
+    --org qanta-challenge
+
+
+python create_dataset.py \
+    --db-path data/dbs/nats25.db --type tossup \
+    --prefix acf-nats25 \
+    --repo-id acf-nats25-tossups \
+    --org qanta-challenge
+
 python create_dataset.py \
     --db-path data/dbs/nats25.db --type tossup \
     --prefix acf-nats25 \
