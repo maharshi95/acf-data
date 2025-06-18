@@ -227,7 +227,7 @@ def parse_bonus_part(part_text: str, part_number: int) -> BonusPartDict:
     part_match = re.match(
         r"\[10(?P<difficulty>[emh])?\]\s*"  # only extract the difficulty modifier (e/m/h) if present
         r"(?P<part_text>.*?)"  # part text (non-greedy)
-        r"ANSWER:\s*(?P<part_answer>.*?)(?:\n|$)",  # part answer, up to next newline or end
+        r"\s*ANSWER:\s*(?P<part_answer>.*?)(?:\n|$)",  # part answer, up to next newline or end
         part_text.strip(),
         flags=re.S | re.I,
     )
@@ -280,6 +280,8 @@ def parse_tossup_block(block: str) -> list[TossupQuestionDict]:
     questions = []
     for raw in raw_qs:
         raw = raw.strip()
+        print(raw)
+        print("-" * 100)
         if not raw or not raw[0].isdigit():
             continue
         q = parse_tossup_question(raw)
@@ -289,6 +291,8 @@ def parse_tossup_block(block: str) -> list[TossupQuestionDict]:
             raise ValueError(f"Failed to parse tossup answer: \n{raw}")
         questions.append(q)
 
+    if len(questions) != 20:
+        raise ValueError(f"Expected 20 questions, got {len(questions)}")
     return questions
 
 
@@ -305,14 +309,29 @@ def parse_bonus_block(block: str) -> list[BonusQuestionDict]:
     # split on question numbers at start of line: "1. ", "2. ", …
     raw_qs = re.split(r"\n(?=\d+\.\s)", block)
 
+    stripped_blocks = [b.strip() for b in raw_qs if b.strip()]
+
+    if len(stripped_blocks) != 20:
+        logger.warning(f"Expected 20 raw question blocks, got {len(stripped_blocks)}")
+
     questions = []
-    for raw in raw_qs:
-        raw = raw.strip()
+    pending_unparsed = ""
+    for raw in stripped_blocks:
         if not raw or not raw[0].isdigit():
             continue
 
-        q = parse_bonus_question(raw)
-        questions.append(q)
+        raw = pending_unparsed + raw
+        pending_unparsed = ""
+
+        try:
+            q = parse_bonus_question(raw)
+            questions.append(q)
+        except ValueError:
+            logger.warning(f"Failed to parse bonus question: {raw}")
+            pending_unparsed = raw
+
+    if len(questions) != 20:
+        logger.warning(f"Expected 20 questions, got {len(questions)}")
 
     return questions
 
@@ -514,12 +533,14 @@ if __name__ == "__main__":
                 "Packet name should not be provided if input is a directory"
             )
 
-        filenames = os.listdir(args.input)
+        filenames = [f for f in os.listdir(args.input) if f.endswith(".pdf")]
         filenames.sort()
+
+        print("Packets: ", ", ".join(filenames))
 
         dataset_entries = {"bonuses": [], "tossups": []}
 
-        for packet_idx, filename in tqdm(
+        for packet_number, filename in tqdm(
             enumerate(filenames, start=1),
             total=len(filenames),
             desc="Processing packet files",
@@ -530,11 +551,11 @@ if __name__ == "__main__":
             if not filepath.endswith(".pdf"):
                 print(f"Skipping {filepath} because it is not a PDF")
                 continue
-            packet_id = filepath.split(".")[0]
+            packet_id = f"{args.question_set}-{packet_number:02d} {packet_name}"
             packet_content = main(
                 filepath,
                 question_set=args.question_set,
-                packet_number=packet_idx,
+                packet_number=packet_number,
                 packet_name=packet_name,
             )
             dataset_entries["bonuses"].extend(packet_content["bonuses"])
@@ -552,5 +573,31 @@ if __name__ == "__main__":
             bonus_dataset.push_to_hub(
                 f"{args.hf_repo_id}", config_name="bonus", split="eval", private=True
             )
+
+# %%
+from datasets import load_dataset
+
+print("-" * 100)
+print("Verifying dataset")
+for config_name in ["tossup", "bonus"]:
+    dataset = load_dataset(
+        "qanta-challenge/qanta25-final",
+        config_name,
+        split="eval",
+        download_mode="force_redownload",
+    )
+    qids = dataset["qid"]
+    # group by packet
+    qids_by_packet = {}
+    for qid in qids:
+        packet_id = qid.split("-")[-2]
+        qids_by_packet.setdefault(packet_id, []).append(qid)
+
+    for packet_id, qids in qids_by_packet.items():
+        print(packet_id, len(qids))
+
+    if config_name == "bonus":
+        for parts in dataset["parts"]:
+            assert len(parts) == 3
 
 # %%
