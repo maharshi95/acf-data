@@ -2,6 +2,8 @@
 import re
 from typing import Tuple
 
+import datasets
+
 
 def remove_instruction(q: str) -> Tuple[str, str]:
     # Check if q starts with <em>..</em> if so, check if it contains a sentence:
@@ -122,6 +124,28 @@ def remove_tags(q):
     return re.sub(r"<\/?(em|b|i|u)>", "", q)
 
 
+def normalize_quotes(q):
+    for c in ["\\“", "\\”", '\\"', "“", "”"]:
+        q = q.replace(c, '"')
+    q = q.replace("\\'", "'")
+    return q
+
+
+def remove_braces(s: str) -> str:
+    s = (
+        s.replace("{", "")
+        .replace("}", "")
+        .removeprefix("or ")
+        .removesuffix("]")
+        .removesuffix(")")
+        .removesuffix(";")
+        .strip()
+    )
+    if s.startswith('"') and s.endswith('"'):
+        s = s[1:-1]
+    return s
+
+
 def sanitize_question(q):
     q = squish_whitespace(q)
     q, _ = remove_instruction(q)
@@ -139,6 +163,8 @@ def sanitize_answer(a):
     a = remove_tags(a)
     a = remove_pgs(a)
     a = remove_power_pos(a)
+    a = normalize_quotes(a)
+    a = squish_whitespace(a)
     return a.strip()
 
 
@@ -151,74 +177,217 @@ def sanitokenize(q):
     return sanitize_question(q).split()
 
 
+def normalize_html_answer_line(answer_line: str):
+    answer_line = answer_line.removeprefix("</b>")
+    answer_line = re.sub(r"<u><b>|<b><u>", "<b>", answer_line)
+    answer_line = re.sub(r"</u></b>|</b></u>", "</b>", answer_line)
+    answer_line = answer_line.replace("<b>", "{").replace("</b>", "}")
+    answer_line = remove_tags(answer_line)
+    return answer_line
+
+
 # Check if answer line has explanation. Explanation is in () at the end of the line
 def split_explanation(line: str):
+    if (j := line.rfind("]")) != -1:
+        if (i := line[j:].find("(")) != -1:
+            explanation = line[i + j :]
+            if remove_pgs(" " + explanation) != "":
+                answer_line = line[: i + j].strip()
+                explanation = explanation.strip("( )")
+                return answer_line, explanation
     if line.endswith(")") and (i := line.rfind("(")) > 0:
         explanation = line[i:]
         if remove_pgs(" " + explanation) != "":
             answer_line = line[:i].strip()
-            explanation = explanation.strip("()")
+            explanation = explanation.strip("( )")
             return answer_line, explanation
     return line, ""
 
 
-def get_clean_answers(raw_ans_text: str, primary: bool = True):
-    raw_ans_text = squish_whitespace(raw_ans_text)
-    answer_line, explanation = split_explanation(raw_ans_text)
+def extract_possible_answers(braced_answer: str):
+    """
+    Extract possible answers from a single answer that has {} brackets.
+    Text within {} is mandatory, other is optional.
+    Extract answers such that a correct answer is an exact match with at least one of the extracted answers.
+    Example:
+        "{Joe} Biden" -> ["Joe Biden", "Joe"]
+        "{J}oseph {Biden}" -> ["Joseph Biden", "J Biden"]
+        "{Joe} {Biden}" -> ["Joe Biden"]
+        "{J}ohn {F}rank {K}ennedy" -> ["J F K", "J F Kennedy", "John F K", "John F Kennedy", "J Frank K", "J Frank Kennedy", "John Frank K", "John Frank Kennedy"]
+    """
+    import re
+    from itertools import product
 
-    for c in ["\\“", "\\”", '\\"']:
-        answer_line = answer_line.replace(c, '"')
-    for c in ["“", "”"]:
-        answer_line = answer_line.replace(c, '"')
-    answer_line = answer_line.replace("\\'", "'")
+    # Handle empty or None input
+    if not braced_answer:
+        return []
+
+    # Tokenize into segments: each is either a {braced} or a plain run
+    pattern = re.compile(r"(\{[^{}]+\})")
+    segments = []
+    last = 0
+    for m in pattern.finditer(braced_answer):
+        if m.start() > last:
+            segments.append(braced_answer[last : m.start()])
+        segments.append(m.group())
+        last = m.end()
+    if last < len(braced_answer):
+        segments.append(braced_answer[last:])
+
+    # Group segments into pairs of braced + non-braced text
+    groups = []
+    i = 0
+    while i < len(segments):
+        if re.fullmatch(r"\{([^{}]+)\}", segments[i]):
+            braced_content = re.fullmatch(r"\{([^{}]+)\}", segments[i]).group(1)
+            if i + 1 < len(segments) and not re.fullmatch(
+                r"\{([^{}]+)\}", segments[i + 1]
+            ):
+                groups.append((braced_content, segments[i + 1]))
+                i += 2
+            else:
+                groups.append((braced_content, ""))
+                i += 1
+        else:
+            groups.append(("", segments[i]))
+            i += 1
+
+    # For each group, create options
+    options = []
+    for i, (braced, non_braced) in enumerate(groups):
+        if braced:
+            if non_braced.strip():
+                options.append([braced, braced + non_braced])
+            else:
+                options.append([braced])
+        else:
+            # Make non-braced text at beginning optional
+            if i == 0 and non_braced.strip():
+                options.append(["", non_braced])
+            else:
+                options.append([non_braced])
+
+    # Generate combinations with proper spacing
+    all_combos = []
+    for combo in product(*options):
+        # Join segments with proper spacing
+        candidate = ""
+        for segment in combo:
+            if (
+                candidate
+                and not candidate.endswith(" ")
+                and not segment.startswith(" ")
+            ):
+                candidate += " "  # Add space if needed between segments
+            candidate += segment
+
+        candidate = squish_whitespace(candidate).strip()
+        if candidate:
+            all_combos.append(candidate)
+
+    # Remove duplicates and sort by length descending
+    all_combos = sorted(set(all_combos), key=lambda x: (-len(x), x))
+
+    return all_combos
+
+
+def _extract_braced_answer_chunks(raw_answer_text: str):
+    answer_line, explanation = split_explanation(raw_answer_text)
+
+    answer_line = normalize_quotes(answer_line)
     answer_line = answer_line.replace("&nbsp;", " ")
     answer_line = remove_tags(answer_line)
     answer_line = remove_pgs(answer_line)
     answer_line = answer_line.replace('"', "")
 
-    def normalize_braces(s: str) -> str:
-        s = (
-            s.replace("{", "")
-            .replace("}", "")
-            .removeprefix("or ")
-            .removesuffix("]")
-            .removesuffix(")")
-            .removesuffix(";")
-            .strip()
-        )
-        if s.startswith('"') and s.endswith('"'):
-            s = s[1:-1]
-        return s
-
     answers = []
-    bad_index_starts = list(
+    # Find rejection phrases like [prompt ...], [do not accept ...], [before ...]
+    # and remove them and everything after them
+    rejection_span_start_indices = list(
         re.finditer(r"(\[| |;)(prompt|do not accept|before) ", answer_line)
     )
-    if bad_index_starts:
-        idx = bad_index_starts[0].span()[0]
+    if rejection_span_start_indices:
+        idx = rejection_span_start_indices[0].span()[0]
         answer_line = answer_line[:idx]
 
     if "[" in answer_line:
-        gold, alternates = answer_line.split("[", 1)
+        gold, alternates_str = answer_line.split("[", 1)
+        alternates_str = alternates_str.removesuffix("]")
     else:
-        gold, alternates = answer_line, ""
+        gold, alternates_str = answer_line, ""
 
     candidates = []
 
-    alternates = alternates.removeprefix("or ").removeprefix("accept ")
-    for words in set(re.split(r" or,? ", alternates)):
+    alternates = alternates_str.removeprefix("or ").removeprefix("accept ")
+    # Split alternates on " or " or " or, " and iterate over unique results
+    for words in set(re.split(r"(?: or,? |; or )", alternates)):
         candidates.extend(words.split(" accept "))
-    for words in set(re.split(r" or,? ", gold)):
+    for words in set(re.split(r"(?: or,? |; or )", gold)):
+        candidates.extend(words.split(" accept "))
+
+    answers.extend(candidates)
+
+    def cleanup_braced_answer(ans: str) -> str:
+        ans = ans.removeprefix("}").removesuffix("{").strip()
+        return ans.replace("{ }", "").replace("{}", "").strip()
+
+    return list({cleanup_braced_answer(a) for a in answers} - {""}), explanation
+
+
+def extract_braced_answers(braced_ans_text: str):
+    answers = {remove_braces(braced_ans_text)}
+    braced = re.findall(r"\{.+?\}", braced_ans_text)  # find all {braced} answers
+    if len(braced) >= 1:
+        answers.add(" ".join(map(remove_braces, braced)))
+        answers.update(map(remove_braces, braced))
+    return list(answers - {""})
+
+
+# TODO(maharshi95): Handle "or word forms such as" and "or synonyms such as", maybe more generally "
+# "or <noun phrase> such as <comma separated examples>"
+def get_clean_answers(raw_ans_text: str, primary: bool = True):
+    raw_ans_text = squish_whitespace(raw_ans_text).strip()
+    answer_line, explanation = split_explanation(raw_ans_text)
+
+    answer_line = normalize_quotes(answer_line)
+    answer_line = answer_line.replace("&nbsp;", " ")
+    answer_line = remove_tags(answer_line)
+    answer_line = remove_pgs(answer_line)
+    answer_line = answer_line.replace('"', "")
+
+    answers = []
+    # Find rejection phrases like [prompt ...], [do not accept ...], [before ...]
+    # and remove them and everything after them
+    rejection_span_start_indices = list(
+        re.finditer(r"(\[| |;)(reject|prompt|do not accept|before) ", answer_line)
+    )
+    if rejection_span_start_indices:
+        idx = rejection_span_start_indices[0].span()[0]
+        answer_line = answer_line[:idx]
+
+    if "[" in answer_line:
+        gold, alternates_str = answer_line.split("[", 1)
+        alternates_str = alternates_str.removesuffix("]")
+    else:
+        gold, alternates_str = answer_line, ""
+
+    candidates = []
+
+    alternates = alternates_str.removeprefix("or ").removeprefix("accept ")
+    # Split alternates on " or " or " or, " and iterate over unique results
+    for words in set(re.split(r"(?: or,? |; or )", alternates)):
+        candidates.extend(words.split(" accept "))
+    for words in set(re.split(r"(?: or,? |; or )", gold)):
         candidates.extend(words.split(" accept "))
 
     answers.extend(candidates)
     for split in candidates:
         braced = re.findall(r"\{.+?\}", split)  # find all {braced} answers
         if len(braced) >= 1:
-            answers.append(" ".join(map(normalize_braces, braced)))
-            answers.extend(map(normalize_braces, braced))
+            answers.append(" ".join(map(remove_braces, braced)))
+            answers.extend(map(remove_braces, braced))
 
-    answers = {*map(normalize_braces, answers)} - {""}
+    answers = {*map(remove_braces, answers)} - {""}
     if primary:
         return gold.strip(), list(answers), explanation
     else:
@@ -226,12 +395,24 @@ def get_clean_answers(raw_ans_text: str, primary: bool = True):
 
 
 def get_short_clean_answers(raw_answer_string: str, max_tokens: int = 10):
-    answer = re.sub(r"<u><b>|<b><u>", "<b>", raw_answer_string)
-    answer = re.sub(r"</u></b>|</b></u>", "</b>", answer)
-    answer = answer.replace("<b>", "{").replace("</b>", "}")
+    # Replace bold+underline with just bold (usually the bold text is almost always underlined)
+    answer = normalize_html_answer_line(raw_answer_string)
     answer = sanitize_answer(answer)
     answer_primary, clean_answers, explanation = get_clean_answers(answer, primary=True)
-    clean_answers = [a for a in clean_answers if len(a.split()) <= max_tokens]
+    clean_answers = set()
+    braced_chunks, explanation = _extract_braced_answer_chunks(answer)
+    for chunk in braced_chunks:
+        clean_answers.update(extract_possible_answers(chunk))
+    clean_answers_filtered = [a for a in clean_answers if len(a.split()) <= max_tokens]
+    if clean_answers_filtered:
+        clean_answers = clean_answers_filtered
+    # complex_braced = [b for b in braced_chunks if b.count("{") > 1]
+    # if len(complex_braced) >= 1:
+    #     print(raw_answer_string)
+    #     print(f"Complex braced answers: {complex_braced}")
+    #     print(clean_answers)
+    #     print()
+
     return {
         "primary": answer_primary,
         "clean": clean_answers,
@@ -266,3 +447,103 @@ if __name__ == "__main__":
     ]
     for text in texts:
         print(remove_pgs(text))
+
+    test_cases_brace_answer_extraction = [
+        # Basic cases from the docstring
+        ("{Joe} Biden", ["Joe Biden", "Joe"]),
+        ("{J}oseph {Biden}", ["Joseph Biden", "J Biden"]),
+        ("{Joe} {Biden}", ["Joe Biden"]),
+        (
+            "{J}ohn {F}rank {K}ennedy",
+            [
+                "John Frank Kennedy",
+                "John Frank K",
+                "John F Kennedy",
+                "John F K",
+                "J Frank Kennedy",
+                "J Frank K",
+                "J F Kennedy",
+                "J F K",
+            ],
+        ),
+        # Non-braced text at beginning
+        (
+            "President {Joe} Biden",
+            ["President Joe Biden", "President Joe", "Joe Biden", "Joe"],
+        ),
+        (
+            "The {United} {States} of America",
+            [
+                "The United States of America",
+                "The United States",
+                "United States of America",
+                "United States",
+            ],
+        ),
+        # Multiple consecutive braced segments
+        ("{United} {States} {of} {America}", ["United States of America"]),
+        ("{George} {Herbert} {Walker} {Bush}", ["George Herbert Walker Bush"]),
+        # Whitespace handling
+        ("{Joe} ", ["Joe"]),
+        (" {Joe}", ["Joe"]),
+        ("{Joe}  {Biden}", ["Joe Biden"]),
+        # Mixed cases
+        (
+            "The {J}ames {K}. {P}olk",
+            [
+                "The James K. Polk",
+                "The James K. P",
+                "The James K Polk",
+                "The James K P",
+                "The J K. Polk",
+                "The J K. P",
+                "The J K Polk",
+                "The J K P",
+                "James K. Polk",
+                "James K. P",
+                "James K Polk",
+                "James K P",
+                "J K. Polk",
+                "J K. P",
+                "J K Polk",
+                "J K P",
+            ],
+        ),
+        ("{Franklin} D. {Roosevelt}", ["Franklin D. Roosevelt", "Franklin Roosevelt"]),
+        # Edge cases
+        ("No braces here", ["No braces here"]),
+        ("{All} {braced} {text}", ["All braced text"]),
+        ("{Pope} {John} {Paul} II", ["Pope John Paul II", "Pope John Paul"]),
+    ]
+    for input_text, expected in test_cases_brace_answer_extraction:
+        result = extract_possible_answers(input_text)
+        if set(result) != set(expected):
+            print(f"Failed for '{input_text}'")
+            if missed := set(expected) - set(result):
+                print(f"Missed: {missed}")
+            if undesired := set(result) - set(expected):
+                print(f"Undesired: {undesired}")
+    # %%
+
+    dataset_name = "qanta-challenge/qanta25-final"
+    bonus_ds = datasets.load_dataset(dataset_name, "bonus", split="eval")
+    tossup_ds = datasets.load_dataset(dataset_name, "tossup", split="eval")
+    raw_answers = []
+    for e in tossup_ds:
+        raw_answers.append(e["answer_line"])
+    for e in bonus_ds:
+        for p in e["parts"]:
+            raw_answers.append(p["answer_line"])
+    # %%
+    all_clean_answers = []
+    print("# raw answer strings:", len(raw_answers))
+    for a in raw_answers:
+        clean_answers = get_short_clean_answers(a)["clean"]
+        short_answers = [c for c in clean_answers if len(c.split()) >= 10]
+        if short_answers:
+            print(a, short_answers, end="\n\n", sep="\n")
+            print(clean_answers)
+        all_clean_answers.extend(clean_answers)
+    print("# all clean answer strings:", len(all_clean_answers))
+
+    # %%

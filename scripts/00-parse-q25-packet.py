@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 import re
-from typing import TypedDict
+from typing import Counter, TypedDict
 
 import fitz
 from datasets import Dataset
@@ -227,7 +227,7 @@ def parse_bonus_part(part_text: str, part_number: int) -> BonusPartDict:
     part_match = re.match(
         r"\[10(?P<difficulty>[emh])?\]\s*"  # only extract the difficulty modifier (e/m/h) if present
         r"(?P<part_text>.*?)"  # part text (non-greedy)
-        r"\s*ANSWER:\s*(?P<part_answer>.*?)(?:\n|$)",  # part answer, up to next newline or end
+        r"\s*ANSWER:\s*(?P<part_answer>.*?)(?:$)",  # part answer, up to next newline or end
         part_text.strip(),
         flags=re.S | re.I,
     )
@@ -280,8 +280,8 @@ def parse_tossup_block(block: str) -> list[TossupQuestionDict]:
     questions = []
     for raw in raw_qs:
         raw = raw.strip()
-        print(raw)
-        print("-" * 100)
+        # print(raw)
+        # print("-" * 100)
         if not raw or not raw[0].isdigit():
             continue
         q = parse_tossup_question(raw)
@@ -323,11 +323,14 @@ def parse_bonus_block(block: str) -> list[BonusQuestionDict]:
         raw = pending_unparsed + raw
         pending_unparsed = ""
 
+        # print(raw)
+        # print("-" * 100)
+
         try:
             q = parse_bonus_question(raw)
             questions.append(q)
         except ValueError:
-            logger.warning(f"Failed to parse bonus question: {raw}")
+            logger.warning(f"Failed to parse bonus question: \n{raw}")
             pending_unparsed = raw
 
     if len(questions) != 20:
@@ -595,6 +598,11 @@ for config_name in ["tossup", "bonus"]:
 
     for packet_id, qids in qids_by_packet.items():
         print(packet_id, len(qids))
+
+    if config_name == "tossup":
+        print("Clue count distribution")
+        n_clues = [len(q["clue_spans"]) for q in dataset]
+        print(Counter(n_clues))
 
     if config_name == "bonus":
         for parts in dataset["parts"]:
