@@ -234,12 +234,15 @@ def extract_possible_answers(braced_answer: str):
     if last < len(braced_answer):
         segments.append(braced_answer[last:])
 
-    # Group segments into pairs of braced + non-braced text
+    # Group segments into braced groups and standalone non-braced groups.
+    # A braced group is (braced, non_braced_after)
     groups = []
     i = 0
     while i < len(segments):
-        if re.fullmatch(r"\{([^{}]+)\}", segments[i]):
-            braced_content = re.fullmatch(r"\{([^{}]+)\}", segments[i]).group(1)
+        seg = segments[i]
+        if re.fullmatch(r"\{([^{}]+)\}", seg):
+            braced_content = re.fullmatch(r"\{([^{}]+)\}", seg).group(1)
+            # If there's a following non-braced piece, attach as suffix
             if i + 1 < len(segments) and not re.fullmatch(
                 r"\{([^{}]+)\}", segments[i + 1]
             ):
@@ -249,45 +252,45 @@ def extract_possible_answers(braced_answer: str):
                 groups.append((braced_content, ""))
                 i += 1
         else:
-            groups.append(("", segments[i]))
+            # Non-braced chunk not adjacent to a following braced segment (or trailing text)
+            groups.append(("", seg))
             i += 1
 
-    # For each group, create options
+    # Build options for each group.
+    # For braced groups with a non-braced suffix, include:
+    #  - braced-only, but preserve a single separating space if the original suffix contained whitespace
+    #  - braced + full suffix
+    # For non-braced initial chunk (idx == 0), make it optional: ["", chunk]
     options = []
-    for i, (braced, non_braced) in enumerate(groups):
+    for idx, (braced, non_braced) in enumerate(groups):
         if braced:
-            if non_braced.strip():
-                options.append([braced, braced + non_braced])
+            # treat any following non_braced string (including pure whitespace) as a suffix
+            if non_braced != "":
+                # preserve a single separator in the braced-only choice when the suffix has
+                # leading or trailing whitespace so subsequent groups don't get concatenated
+                sep = (
+                    " " if (non_braced[0].isspace() or non_braced[-1].isspace()) else ""
+                )
+                options.append([braced + sep, braced + non_braced])
             else:
                 options.append([braced])
         else:
-            # Make non-braced text at beginning optional
-            if i == 0 and non_braced.strip():
+            if idx == 0 and non_braced.strip():
+                # initial non-braced chunk should be optional
                 options.append(["", non_braced])
             else:
                 options.append([non_braced])
 
-    # Generate combinations with proper spacing
+    # Generate combinations by simple concatenation, then normalize whitespace.
     all_combos = []
     for combo in product(*options):
-        # Join segments with proper spacing
-        candidate = ""
-        for segment in combo:
-            if (
-                candidate
-                and not candidate.endswith(" ")
-                and not segment.startswith(" ")
-            ):
-                candidate += " "  # Add space if needed between segments
-            candidate += segment
-
+        candidate = "".join(combo)
         candidate = squish_whitespace(candidate).strip()
         if candidate:
             all_combos.append(candidate)
 
-    # Remove duplicates and sort by length descending
+    # Deduplicate and sort by length (descending) for deterministic order
     all_combos = sorted(set(all_combos), key=lambda x: (-len(x), x))
-
     return all_combos
 
 
@@ -304,7 +307,7 @@ def _extract_braced_answer_chunks(raw_answer_text: str):
     # Find rejection phrases like [prompt ...], [do not accept ...], [before ...]
     # and remove them and everything after them
     rejection_span_start_indices = list(
-        re.finditer(r"(\[| |;)(prompt|do not accept|before) ", answer_line)
+        re.finditer(r"(\[| |;)(reject|prompt|do not accept|before) ", answer_line)
     )
     if rejection_span_start_indices:
         idx = rejection_span_start_indices[0].span()[0]
@@ -331,7 +334,25 @@ def _extract_braced_answer_chunks(raw_answer_text: str):
         ans = ans.removeprefix("}").removesuffix("{").strip()
         return ans.replace("{ }", "").replace("{}", "").strip()
 
-    return list({cleanup_braced_answer(a) for a in answers} - {""}), explanation
+    answers = list({cleanup_braced_answer(a) for a in answers} - {""})
+    for a in answers:
+        if " AND " in a:
+            print(f"Found AND in answer: {raw_answer_text} -> {a}")
+            # replace AND with {and}, and also insert "B and A" for "A and B"
+            a = a.replace(" AND ", " {and} ")
+            answers.append(a)
+            parts = a.split(" {and} ")
+            if len(parts) == 2:
+                a_rev = f"{parts[1]} {{and}} {parts[0]}"
+                answers.append(a_rev)
+            else:
+                print(f"Could not process AND in answer: {raw_answer_text} -> {a}")
+        elif " OR " in a:
+            print(f"Found OR in answer: {raw_answer_text} -> {a}")
+            parts = a.split(" OR ")
+            # insert each part as a separate answer
+            answers.extend(parts)
+    return answers, explanation
 
 
 def extract_braced_answers(braced_ans_text: str):
@@ -396,11 +417,16 @@ def get_clean_answers(raw_ans_text: str, primary: bool = True):
 
 def get_short_clean_answers(raw_answer_string: str, max_tokens: int = 10):
     # Replace bold+underline with just bold (usually the bold text is almost always underlined)
-    answer = normalize_html_answer_line(raw_answer_string)
-    answer = sanitize_answer(answer)
-    answer_primary, clean_answers, explanation = get_clean_answers(answer, primary=True)
+    normalized_answer_line = normalize_html_answer_line(raw_answer_string)
+    normalized_answer_line = sanitize_answer(normalized_answer_line)
+    normalized_answer_line = (
+        normalized_answer_line.replace("{ ", "{").replace(" }", "}").replace("{}", "")
+    )
+    answer_primary, clean_answers, explanation = get_clean_answers(
+        normalized_answer_line, primary=True
+    )
     clean_answers = set()
-    braced_chunks, explanation = _extract_braced_answer_chunks(answer)
+    braced_chunks, explanation = _extract_braced_answer_chunks(normalized_answer_line)
     for chunk in braced_chunks:
         clean_answers.update(extract_possible_answers(chunk))
     clean_answers_filtered = [a for a in clean_answers if len(a.split()) <= max_tokens]
@@ -415,6 +441,7 @@ def get_short_clean_answers(raw_answer_string: str, max_tokens: int = 10):
 
     return {
         "primary": answer_primary,
+        "normalized": normalized_answer_line,
         "clean": clean_answers,
         "explanation": explanation,
     }
@@ -450,6 +477,7 @@ if __name__ == "__main__":
 
     test_cases_brace_answer_extraction = [
         # Basic cases from the docstring
+        ("wild{fire}", ["wildfire", "fire"]),
         ("{Joe} Biden", ["Joe Biden", "Joe"]),
         ("{J}oseph {Biden}", ["Joseph Biden", "J Biden"]),
         ("{Joe} {Biden}", ["Joe Biden"]),
@@ -539,11 +567,14 @@ if __name__ == "__main__":
     print("# raw answer strings:", len(raw_answers))
     for a in raw_answers:
         clean_answers = get_short_clean_answers(a)["clean"]
-        short_answers = [c for c in clean_answers if len(c.split()) >= 10]
-        if short_answers:
-            print(a, short_answers, end="\n\n", sep="\n")
-            print(clean_answers)
-        all_clean_answers.extend(clean_answers)
+        if "Guinea" in a:
+            print(a, clean_answers)
+
+        # short_answers = [c for c in clean_answers if len(c.split()) >= 10]
+        # if short_answers:
+        #     print(a, short_answers, end="\n\n", sep="\n")
+        #     print(clean_answers)
+        # all_clean_answers.extend(clean_answers)
     print("# all clean answer strings:", len(all_clean_answers))
 
     # %%

@@ -6,7 +6,7 @@ import re
 from typing import Counter, TypedDict
 
 import fitz
-from datasets import Dataset
+from datasets import Dataset, load_dataset
 from loguru import logger
 from tqdm import tqdm
 
@@ -73,6 +73,7 @@ def transform_bonus_question(
             number=part["part_number"],
             question=part_text,
             answer_line=raw_answer_str,
+            normalized_answer_line=answers["normalized"],
             answer_primary=answers["primary"],
             clean_answers=answers["clean"],
             explanation=answers["explanation"],
@@ -115,6 +116,7 @@ def transform_tossup_question(
     return QBTossupQuestion(
         qid=f"{qid_prefix}-{packet_number:02d}-{tossup['question_number']}",
         answer_line=answer_raw,
+        normalized_answer_line=answers["normalized"],
         clean_answers=answers["clean"],
         explanation=answers["explanation"],
         answer_primary=answers["primary"],
@@ -577,35 +579,32 @@ if __name__ == "__main__":
                 f"{args.hf_repo_id}", config_name="bonus", split="eval", private=True
             )
 
-# %%
-from datasets import load_dataset
+    print("-" * 100)
+    print("Verifying dataset")
+    for config_name in ["tossup", "bonus"]:
+        dataset = load_dataset(
+            args.hf_repo_id or output_dir,
+            config_name,
+            split="eval",
+            download_mode="force_redownload",
+        )
+        qids = dataset["qid"]
+        # group by packet
+        qids_by_packet = {}
+        for qid in qids:
+            packet_id = qid.split("-")[-2]
+            qids_by_packet.setdefault(packet_id, []).append(qid)
 
-print("-" * 100)
-print("Verifying dataset")
-for config_name in ["tossup", "bonus"]:
-    dataset = load_dataset(
-        "qanta-challenge/qanta25-final",
-        config_name,
-        split="eval",
-        download_mode="force_redownload",
-    )
-    qids = dataset["qid"]
-    # group by packet
-    qids_by_packet = {}
-    for qid in qids:
-        packet_id = qid.split("-")[-2]
-        qids_by_packet.setdefault(packet_id, []).append(qid)
+        for packet_id, qids in qids_by_packet.items():
+            print(packet_id, len(qids))
 
-    for packet_id, qids in qids_by_packet.items():
-        print(packet_id, len(qids))
+        if config_name == "tossup":
+            print("Clue count distribution")
+            n_clues = [len(q["clue_spans"]) for q in dataset]
+            print(Counter(n_clues))
 
-    if config_name == "tossup":
-        print("Clue count distribution")
-        n_clues = [len(q["clue_spans"]) for q in dataset]
-        print(Counter(n_clues))
+        if config_name == "bonus":
+            for parts in dataset["parts"]:
+                assert len(parts) == 3
 
-    if config_name == "bonus":
-        for parts in dataset["parts"]:
-            assert len(parts) == 3
-
-# %%
+    # %%
