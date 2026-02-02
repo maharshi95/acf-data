@@ -110,6 +110,7 @@ def create_tossup_entries(session, db_prefix: str) -> tuple[list[dict], dict[int
             "answer_line": tossup.answer,
             "answer_primary": tossup.answer_primary,
             "clean_answers": list(answers["clean"]),
+            "explanation": answers["explanation"],
             "clue_spans": clue_spans,
             "metadata": {
                 "category": question.category_slug,
