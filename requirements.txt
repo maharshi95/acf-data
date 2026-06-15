@@ -1,5 +1,8 @@
 numpy
+seaborn
+matplotlib
 pandas
+networkx
 tabulate
 loguru
 blingfire

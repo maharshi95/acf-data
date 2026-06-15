@@ -8,6 +8,8 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     event,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 
@@ -57,6 +59,7 @@ class Base(DeclarativeBase):
 
 class QuestionSet(Base):
     __tablename__ = "question_set"
+    """Top-level collection of related question set editions and difficulty tags."""
 
     id = Column(Integer, primary_key=True)
     name = Column(String)
@@ -64,12 +67,14 @@ class QuestionSet(Base):
     difficulty = Column(String)
 
     editions = relationship("QuestionSetEdition", back_populates="question_set")
+    players = relationship("Player", back_populates="question_set")
 
     __table_args__ = (UniqueConstraint("slug", name="uq_question_set_slug"),)
 
 
 class QuestionSetEdition(Base):
     __tablename__ = "question_set_edition"
+    """Specific release of a question set that tournaments, packets, and questions tie to."""
 
     id = Column(Integer, primary_key=True)
     question_set_id = Column(Integer, ForeignKey("question_set.id"))
@@ -93,6 +98,7 @@ class QuestionSetEdition(Base):
 
 class Packet(Base):
     __tablename__ = "packet"
+    """A packet of questions drawn from a question set edition and used in rounds."""
 
     id = Column(Integer, primary_key=True)
     question_set_edition_id = Column(Integer, ForeignKey("question_set_edition.id"))
@@ -107,6 +113,7 @@ class Packet(Base):
 
 class PacketQuestion(Base):
     __tablename__ = "packet_question"
+    """Join table linking packets to numbered questions within that packet."""
 
     id = Column(Integer, primary_key=True)
     packet_id = Column(Integer, ForeignKey("packet.id"))
@@ -127,6 +134,7 @@ class PacketQuestion(Base):
 
 class Question(Base):
     __tablename__ = "question"
+    """Author-provided metadata for any question before it becomes a tossup or bonus."""
 
     id = Column(Integer, primary_key=True)
     slug = Column(String)
@@ -154,6 +162,8 @@ class Question(Base):
         "QuestionSetEdition", back_populates="questions"
     )
     bonuses = relationship("Bonus", back_populates="question")
+    bonus_hashes = relationship("BonusHash", back_populates="question")
+    tossup_hashes = relationship("TossupHash", back_populates="question")
 
     __table_args__ = (
         UniqueConstraint(
@@ -172,6 +182,7 @@ class Question(Base):
 
 class Tossup(Base):
     __tablename__ = "tossup"
+    """Playable tossup instance of a question, including text and answer data."""
 
     id = Column(Integer, primary_key=True)
     question_id = Column(Integer, ForeignKey("question.id"))
@@ -182,6 +193,7 @@ class Tossup(Base):
 
     question = relationship("Question", back_populates="tossups")
     buzzes = relationship("Buzz", back_populates="tossup")
+    tossup_hashes = relationship("TossupHash", back_populates="tossup")
 
     __table_args__ = (
         UniqueConstraint(
@@ -194,6 +206,7 @@ class Tossup(Base):
 
 class Tournament(Base):
     __tablename__ = "tournament"
+    """Real-world event using a question set edition, composed of rounds and teams."""
 
     id = Column(Integer, primary_key=True)
     name = Column(String)
@@ -215,6 +228,7 @@ class Tournament(Base):
 
 class Round(Base):
     __tablename__ = "round"
+    """Single numbered round in a tournament, optionally tied to a packet."""
 
     id = Column(Integer, primary_key=True)
     tournament_id = Column(Integer, ForeignKey("tournament.id"))
@@ -229,6 +243,7 @@ class Round(Base):
 
 class Team(Base):
     __tablename__ = "team"
+    """Tournament-specific team entry that fields players and appears in games."""
 
     id = Column(Integer, primary_key=True)
     tournament_id = Column(Integer, ForeignKey("tournament.id"))
@@ -243,6 +258,7 @@ class Team(Base):
     games_as_team_two = relationship(
         "Game", foreign_keys="[Game.team_two_id]", back_populates="team_two"
     )
+    bonus_part_directs = relationship("BonusPartDirect", back_populates="team")
 
     __table_args__ = (
         UniqueConstraint("tournament_id", "slug", name="uq_team_tournament_slug"),
@@ -251,20 +267,24 @@ class Team(Base):
 
 class Player(Base):
     __tablename__ = "player"
+    """Individual competitor on a team, tracked for buzz statistics."""
 
     id = Column(Integer, primary_key=True)
     team_id = Column(Integer, ForeignKey("team.id"))
+    question_set_id = Column(Integer, ForeignKey("question_set.id"), nullable=True)
     name = Column(String)
     slug = Column(String)
 
     team = relationship("Team", back_populates="players")
     buzzes = relationship("Buzz", back_populates="player")
+    question_set = relationship("QuestionSet", back_populates="players")
 
     __table_args__ = (UniqueConstraint("team_id", "slug", name="uq_player_team_slug"),)
 
 
 class Game(Base):
     __tablename__ = "game"
+    """Match between two teams in a round, recording tossups read and scoring events."""
 
     id = Column(Integer, primary_key=True)
     round_id = Column(Integer, ForeignKey("round.id"))
@@ -280,10 +300,12 @@ class Game(Base):
         "Team", foreign_keys=[team_two_id], back_populates="games_as_team_two"
     )
     buzzes = relationship("Buzz", back_populates="game")
+    bonus_part_directs = relationship("BonusPartDirect", back_populates="game")
 
 
 class Buzz(Base):
     __tablename__ = "buzz"
+    """Individual buzzing attempt linking player, game, tossup, position, and value."""
 
     id = Column(Integer, primary_key=True)
     player_id = Column(Integer, ForeignKey("player.id"))
@@ -309,6 +331,7 @@ class Buzz(Base):
 
 class Bonus(Base):
     __tablename__ = "bonus"
+    """Bonus question tied to a question record, comprised of multiple parts."""
 
     id = Column(Integer, primary_key=True)
     question_id = Column(Integer, ForeignKey("question.id"))
@@ -317,6 +340,7 @@ class Bonus(Base):
 
     question = relationship("Question", back_populates="bonuses")
     bonus_parts = relationship("BonusPart", back_populates="bonus")
+    bonus_hashes = relationship("BonusHash", back_populates="bonus")
 
     __table_args__ = (
         UniqueConstraint(
@@ -329,6 +353,7 @@ class Bonus(Base):
 
 class BonusPart(Base):
     __tablename__ = "bonus_part"
+    """One scored segment of a bonus, storing prompt, answer, value, and difficulty."""
 
     id = Column(Integer, primary_key=True)
     bonus_id = Column(Integer, ForeignKey("bonus.id"))
@@ -342,12 +367,77 @@ class BonusPart(Base):
     difficulty_modifier = Column(String)
 
     bonus = relationship("Bonus", back_populates="bonus_parts")
+    bonus_part_directs = relationship("BonusPartDirect", back_populates="bonus_part")
 
     __table_args__ = (
         UniqueConstraint(
             "bonus_id",
             "part_number",
             name="uq_bonus_part_bonus_id_part_number",
+        ),
+    )
+
+
+class BonusHash(Base):
+    __tablename__ = "bonus_hash"
+    """Deterministic identifiers for bonus content to deduplicate identical bonuses."""
+
+    hash = Column(String, primary_key=True)
+    question_id = Column(Integer, ForeignKey("question.id"))
+    bonus_id = Column(Integer, ForeignKey("bonus.id"))
+
+    question = relationship("Question", back_populates="bonus_hashes")
+    bonus = relationship("Bonus", back_populates="bonus_hashes")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            "bonus_id",
+            name="uq_bonus_hash_question_bonus",
+        ),
+    )
+
+
+class TossupHash(Base):
+    __tablename__ = "tossup_hash"
+    """Deterministic identifiers for tossups to detect duplicates across sets."""
+
+    hash = Column(String, primary_key=True)
+    question_id = Column(Integer, ForeignKey("question.id"))
+    tossup_id = Column(Integer, ForeignKey("tossup.id"))
+
+    question = relationship("Question", back_populates="tossup_hashes")
+    tossup = relationship("Tossup", back_populates="tossup_hashes")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            "tossup_id",
+            name="uq_tossup_hash_question_tossup",
+        ),
+    )
+
+
+class BonusPartDirect(Base):
+    __tablename__ = "bonus_part_direct"
+    """Per-team scoring record for each bonus part answered during a game."""
+
+    id = Column(Integer, primary_key=True)
+    team_id = Column(Integer, ForeignKey("team.id"))
+    game_id = Column(Integer, ForeignKey("game.id"))
+    bonus_part_id = Column(Integer, ForeignKey("bonus_part.id"))
+    value = Column(Integer)
+
+    team = relationship("Team", back_populates="bonus_part_directs")
+    game = relationship("Game", back_populates="bonus_part_directs")
+    bonus_part = relationship("BonusPart", back_populates="bonus_part_directs")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "game_id",
+            "bonus_part_id",
+            name="uq_bonus_part_direct_team_game_part",
         ),
     )
 
@@ -371,14 +461,32 @@ all_classes = [
     Buzz,
     Bonus,
     BonusPart,
+    BonusHash,
+    TossupHash,
+    BonusPartDirect,
 ]
+
+
+def _ensure_optional_columns(engine):
+    """Add columns that were introduced after some DBs were created."""
+    inspector = inspect(engine)
+    with engine.connect() as conn:
+        if "player" in inspector.get_table_names():
+            existing = {c["name"] for c in inspector.get_columns("player")}
+            if "question_set_id" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE player ADD COLUMN"
+                    " question_set_id INTEGER REFERENCES question_set(id)"
+                ))
+                conn.commit()
 
 
 def create_session(db_path, create_tables=False):
     engine = create_engine(f"sqlite:///{db_path}")
     if create_tables:
-        # Create tables if they don't exist
         Base.metadata.create_all(engine)
+    else:
+        _ensure_optional_columns(engine)
     Session = sessionmaker(bind=engine)
     return Session()
 

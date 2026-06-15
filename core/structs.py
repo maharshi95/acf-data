@@ -73,6 +73,7 @@ class BonusPart(JsonStruct):
     number: int
     question: str
     answer_line: str
+    normalized_answer_line: str
     answer_primary: str
     clean_answers: list[str]
     explanation: str
@@ -91,7 +92,8 @@ class QBTossupQuestion(JsonStruct):
     qid: str
     question: str
     answer_line: str  # The raw answer line with html markers from the database
-    answer_primary: str  # t
+    normalized_answer_line: str  # The sanitized answer line
+    answer_primary: str  # The primary answer (first answer in the answer line)
     clean_answers: list[str]
     explanation: str
     clue_spans: list[tuple[int, int]]
