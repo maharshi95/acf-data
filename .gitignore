@@ -1,3 +1,6 @@
+# Project-specific ignores
+/data/
+
 # Mac
 .DS_Store
 
