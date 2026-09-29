@@ -337,7 +337,7 @@ def _extract_braced_answer_chunks(raw_answer_text: str):
     answers = list({cleanup_braced_answer(a) for a in answers} - {""})
     for a in answers:
         if " AND " in a:
-            print(f"Found AND in answer: {raw_answer_text} -> {a}")
+            # print(f"Found AND in answer: {raw_answer_text} -> {a}")
             # replace AND with {and}, and also insert "B and A" for "A and B"
             a = a.replace(" AND ", " {and} ")
             answers.append(a)
@@ -348,7 +348,7 @@ def _extract_braced_answer_chunks(raw_answer_text: str):
             else:
                 print(f"Could not process AND in answer: {raw_answer_text} -> {a}")
         elif " OR " in a:
-            print(f"Found OR in answer: {raw_answer_text} -> {a}")
+            # print(f"Found OR in answer: {raw_answer_text} -> {a}")
             parts = a.split(" OR ")
             # insert each part as a separate answer
             answers.extend(parts)

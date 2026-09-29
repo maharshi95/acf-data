@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "create_acf_dataset.py"
@@ -150,6 +152,57 @@ class SplitTests(unittest.TestCase):
 
 
 class TournamentAndGameMetadataTests(unittest.TestCase):
+    def test_question_set_id_prefixes(self):
+        expected = {
+            "2023-acf-regionals": "acf-regs-23",
+            "2025-acf-nationals": "acf-nats-25",
+            "2024-acf-winter": "acf-wint-24",
+            "2025-acf-fall": "acf-fall-25",
+            "2023-chicago-open": "co-23",
+        }
+        for slug, prefix in expected.items():
+            with self.subTest(slug=slug):
+                self.assertEqual(acf.question_set_id_prefix(slug), prefix)
+
+    def test_unknown_question_set_slug_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported question set slug"):
+            acf.question_set_id_prefix("2025-other-tournament")
+
+    def test_games_use_question_set_ids_and_expose_source_slug(self):
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript("""
+            CREATE TABLE question_set (id INTEGER, slug TEXT);
+            CREATE TABLE question_set_edition (id INTEGER, question_set_id INTEGER);
+            CREATE TABLE tournament (id INTEGER, name TEXT, slug TEXT, level TEXT,
+                                     start_date TEXT, question_set_edition_id INTEGER);
+            CREATE TABLE packet (id INTEGER, name TEXT, descriptor TEXT);
+            CREATE TABLE round (id INTEGER, number INTEGER, exclude_from_individual INTEGER,
+                                packet_id INTEGER, tournament_id INTEGER);
+            CREATE TABLE game (id INTEGER, tossups_read INTEGER, team_one_id INTEGER,
+                               team_two_id INTEGER, round_id INTEGER);
+            INSERT INTO question_set VALUES (1, '2024-acf-regionals'),
+                                            (2, '2025-chicago-open');
+            INSERT INTO question_set_edition VALUES (1, 1), (2, 2);
+            INSERT INTO tournament VALUES
+                (1, 'Berkeley', '2024-acf-regionals-berkeley', 'open', '2024-01-27', 1),
+                (2, 'Chicago Open', '2025-chicago-open', 'open', '2025-06-01', 2);
+            INSERT INTO packet VALUES (1, 'Packet 1', 'A'), (2, 'Packet 2', 'B');
+            INSERT INTO round VALUES (1, 1, 0, 1, 1), (2, 1, 0, 2, 2);
+            INSERT INTO game VALUES (10, 20, 1, 2, 1), (11, 20, 3, 4, 2);
+        """)
+        games, game_id_map = acf.build_games(
+            connection,
+            {1: "team-1", 2: "team-2", 3: "team-3", 4: "team-4"},
+            {1: "acf-regs-24-tour-1", 2: "co-25-tour-2"},
+        )
+
+        self.assertEqual(game_id_map, {10: "acf-regs-24-g-10", 11: "co-25-g-11"})
+        self.assertEqual([game["question_set"] for game in games],
+                         ["2024-acf-regionals", "2025-chicago-open"])
+        self.assertEqual(games[0]["round_id"], "acf-regs-24-r-1")
+        self.assertEqual(games[1]["packet_id"], "co-25-p-2")
+
     def test_event_level_comes_from_question_set_slug(self):
         self.assertEqual(acf.infer_event_level("2025-acf-regionals"), "regionals")
         self.assertEqual(acf.infer_event_level("2024-acf-nationals"), "nationals")
@@ -178,6 +231,52 @@ class BonusResponseTests(unittest.TestCase):
     def test_na_bonus_value_is_unscored_not_incorrect(self):
         self.assertEqual(acf.normalize_bonus_value("NA"), (None, None, False))
         self.assertEqual(acf.normalize_bonus_value(None), (None, None, False))
+
+
+class DatasetCardTests(unittest.TestCase):
+    def test_readme_upload_replaces_legacy_config_and_preserves_other_metadata(self):
+        from huggingface_hub import DatasetCard
+
+        card = DatasetCard("""---
+configs:
+- config_name: tournament
+  data_files: tournament/*
+- config_name: tournaments
+  data_files: tournaments/*
+- config_name: games
+  data_files: games/*
+dataset_info:
+- config_name: tournament
+  features: []
+- config_name: tournaments
+  features: []
+- config_name: games
+  features: []
+---
+# Generated card
+""")
+        with tempfile.TemporaryDirectory() as directory:
+            readme_path = Path(directory) / "README.md"
+            readme_path.write_text("# Detailed dataset card\n", encoding="utf-8")
+            with patch("huggingface_hub.DatasetCard.load", return_value=card), patch(
+                "huggingface_hub.HfApi"
+            ) as api_class:
+                api = api_class.return_value
+                api.list_repo_files.return_value = [
+                    "tournament/2024.parquet", "tournaments/2024.parquet", "games/2024.parquet"
+                ]
+                acf.upload_dataset_readme("org/repo", readme_path)
+
+        api.delete_folder.assert_called_once_with(
+            "tournament", "org/repo", repo_type="dataset"
+        )
+        payload = api.upload_file.call_args.kwargs["path_or_fileobj"].decode("utf-8")
+        self.assertIn("config_name: tournaments", payload)
+        self.assertIn("config_name: games", payload)
+        self.assertNotIn("config_name: tournament\n", payload)
+        self.assertIn("# Detailed dataset card", payload)
+        self.assertNotIn("# Generated card", payload)
+        self.assertEqual(api.upload_file.call_args.kwargs["repo_type"], "dataset")
 
 
 if __name__ == "__main__":

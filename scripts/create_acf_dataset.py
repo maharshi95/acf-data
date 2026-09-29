@@ -14,6 +14,7 @@ import csv
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import sys
 import unicodedata
@@ -27,14 +28,13 @@ sys.path.insert(0, str(ROOT))
 
 from utils import acf_sanitization, qb_tokenization
 
-
 DEFAULT_DB = ROOT / "data/dbs/acf-co-23-25.db"
 DEFAULT_LOOKUP = ROOT / "data/acf-23-25-team-lookup.csv"
 DEFAULT_OUTPUT = ROOT / "data/hf/acf-23-25"
 DATASET_DOCUMENTATION = ROOT / "docs/acf-23-25-dataset.md"
 TABLES = (
     "players",
-    "tournament",
+    "tournaments",
     "teams",
     "games",
     "tossup_questions",
@@ -360,6 +360,24 @@ def _team_hash(slugs: Iterable[str]) -> str:
     return hashlib.md5("|".join(sorted(set(slugs))).encode()).hexdigest()[:12]
 
 
+def question_set_id_prefix(question_set_slug: str) -> str:
+    """Return the stable ID namespace for a supported question set."""
+    match = re.fullmatch(
+        r"(20\d{2})-(acf-(regionals|nationals|winter|fall)|chicago-open)",
+        question_set_slug or "",
+    )
+    if not match:
+        raise ValueError(f"Unsupported question set slug for IDs: {question_set_slug!r}")
+    year, _, acf_event = match.groups()
+    event = {
+        "regionals": "acf-regs",
+        "nationals": "acf-nats",
+        "winter": "acf-wint",
+        "fall": "acf-fall",
+    }.get(acf_event, "co")
+    return f"{event}-{year[-2:]}"
+
+
 def infer_event_level(question_set_slug: str) -> str:
     slug = (question_set_slug or "").casefold()
     for level in ("nationals", "regionals", "winter", "fall"):
@@ -411,7 +429,7 @@ def infer_game_type(packet_name: str | None) -> str | None:
 
 
 def build_tournaments(
-    connection: sqlite3.Connection, prefix: str
+    connection: sqlite3.Connection,
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
     entries = []
     tournament_id_map = {}
@@ -427,7 +445,7 @@ def build_tournaments(
         ORDER BY tr.id
     """
     for row in connection.execute(query):
-        tournament_id = f"{prefix}-tour-{row['id']}"
+        tournament_id = f"{question_set_id_prefix(row['question_set_slug'])}-tour-{row['id']}"
         tournament_id_map[row["id"]] = tournament_id
         entries.append(
             {
@@ -454,7 +472,9 @@ def build_tournaments(
 
 
 def build_teams(
-    connection: sqlite3.Connection, prefix: str, identities: IdentityResolution
+    connection: sqlite3.Connection,
+    identities: IdentityResolution,
+    tournament_id_map: dict[int, str],
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
     player_rows_by_team: dict[int, list[int]] = defaultdict(list)
     for row in connection.execute("SELECT id, team_id FROM player ORDER BY id"):
@@ -465,12 +485,15 @@ def build_teams(
     query = """
         SELECT tm.id, tm.name, tm.slug, tr.id AS tournament_db_id,
                tr.name AS tournament_name, tr.slug AS tournament_slug,
+               qs.slug AS question_set_slug,
                SUBSTR(tr.start_date, 1, 4) AS year
         FROM team tm JOIN tournament tr ON tr.id = tm.tournament_id
+        JOIN question_set_edition qse ON qse.id = tr.question_set_edition_id
+        JOIN question_set qs ON qs.id = qse.question_set_id
         ORDER BY tm.id
     """
     for row in connection.execute(query):
-        team_id = f"{prefix}-tm-{row['id']}"
+        team_id = f"{question_set_id_prefix(row['question_set_slug'])}-tm-{row['id']}"
         team_id_map[row["id"]] = team_id
         db_player_ids = player_rows_by_team[row["id"]]
         player_ids = sorted({identities.player_id_by_db_id[player_id] for player_id in db_player_ids})
@@ -481,7 +504,7 @@ def build_teams(
             {
                 "_year": row["year"],
                 "team_id": team_id,
-                "tournament_id": f"{prefix}-tour-{row['tournament_db_id']}",
+                "tournament_id": tournament_id_map[row["tournament_db_id"]],
                 "tournament_slug": row["tournament_slug"],
                 "tournament_name": row["tournament_name"],
                 "name": row["name"],
@@ -497,11 +520,11 @@ def build_teams(
 
 def build_games(
     connection: sqlite3.Connection,
-    prefix: str,
     team_id_map: dict[int, str],
     tournament_id_map: dict[int, str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[int, str]]:
     entries = []
+    game_id_map = {}
     query = """
         SELECT g.id, g.tossups_read, g.team_one_id, g.team_two_id,
                r.id AS round_db_id, r.number AS round_number,
@@ -520,13 +543,17 @@ def build_games(
         ORDER BY g.id
     """
     for row in connection.execute(query):
+        prefix = question_set_id_prefix(row["question_set_slug"])
+        game_id = f"{prefix}-g-{row['id']}"
+        game_id_map[row["id"]] = game_id
         entries.append(
             {
                 "_year": row["year"],
-                "game_id": f"{prefix}-g-{row['id']}",
+                "game_id": game_id,
                 "tournament_id": tournament_id_map[row["tournament_db_id"]],
                 "tournament_name": row["tournament_name"],
                 "tournament_slug": row["tournament_slug"],
+                "question_set": row["question_set_slug"],
                 "level": infer_event_level(row["question_set_slug"]),
                 "field_level": row["field_level"],
                 "team_a": team_id_map[row["team_one_id"]],
@@ -541,7 +568,7 @@ def build_games(
                 "exclude_from_individual": bool(row["exclude_from_individual"]),
             }
         )
-    return entries
+    return entries, game_id_map
 
 
 QUESTION_QUERY = """
@@ -576,7 +603,7 @@ def _metadata(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def build_tossups(
-    connection: sqlite3.Connection, prefix: str, include_buzz_positions: bool
+    connection: sqlite3.Connection, include_buzz_positions: bool
 ) -> tuple[
     list[dict[str, Any]],
     dict[int, str],
@@ -593,6 +620,7 @@ def build_tossups(
     tokenization_fallbacks = []
     invalid_buzz_positions = []
     for row in connection.execute(QUESTION_QUERY):
+        prefix = question_set_id_prefix(row["question_set_slug"])
         qid = f"{prefix}-t-{row['packet_id']:02d}-{row['question_number']:02d}"
         question = acf_sanitization.sanitize_question(row["question_text"])
         answers = acf_sanitization.get_short_clean_answers(row["answer"])
@@ -650,15 +678,17 @@ BONUS_QUERY = QUESTION_QUERY.replace(
 
 
 def build_bonuses(
-    connection: sqlite3.Connection, prefix: str
-) -> tuple[list[dict[str, Any]], dict[int, str], dict[int, str]]:
+    connection: sqlite3.Connection,
+) -> tuple[list[dict[str, Any]], dict[int, str], dict[int, str], dict[int, str]]:
     parts_by_bonus: dict[int, list[sqlite3.Row]] = defaultdict(list)
     for part in connection.execute("SELECT * FROM bonus_part ORDER BY bonus_id, part_number, id"):
         parts_by_bonus[part["bonus_id"]].append(part)
     entries = []
     part_qid_map = {}
+    part_id_map = {}
     bonus_qid_map = {}
     for row in connection.execute(BONUS_QUERY):
+        prefix = question_set_id_prefix(row["question_set_slug"])
         qid = f"{prefix}-b-{row['packet_id']:02d}-{row['question_number']:02d}"
         bonus_qid_map[row["id"]] = qid
         parts = []
@@ -677,6 +707,7 @@ def build_bonuses(
                 }
             )
             part_qid_map[part["id"]] = qid
+            part_id_map[part["id"]] = f"{prefix}-bp-{part['id']}"
         entries.append(
             {
                 "qid": qid,
@@ -685,12 +716,11 @@ def build_bonuses(
                 "metadata": _metadata(row),
             }
         )
-    return entries, part_qid_map, bonus_qid_map
+    return entries, part_qid_map, bonus_qid_map, part_id_map
 
 
 def build_question_placements(
     connection: sqlite3.Connection,
-    prefix: str,
     tossup_qid_map: dict[int, str],
     bonus_qid_map: dict[int, str],
 ) -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
@@ -719,6 +749,7 @@ def build_question_placements(
         ORDER BY pq.id
     """
     for row in connection.execute(query):
+        prefix = question_set_id_prefix(row["question_set_slug"])
         if row["tossup_id"] is not None:
             question_type = "tossup"
             qid = tossup_qid_map[row["tossup_id"]]
@@ -748,24 +779,28 @@ def build_question_placements(
 
 def build_tossup_responses(
     connection: sqlite3.Connection,
-    prefix: str,
     identities: IdentityResolution,
     team_id_map: dict[int, str],
+    game_id_map: dict[int, str],
     tossup_qid_map: dict[int, str],
 ) -> list[dict[str, Any]]:
     entries = []
     last_key = None
     buzz_number = 0
     query = """
-        SELECT b.*, p.team_id, SUBSTR(tr.start_date, 1, 4) AS year
+        SELECT b.*, p.team_id, qs.slug AS question_set_slug,
+               SUBSTR(tr.start_date, 1, 4) AS year
         FROM buzz b
         JOIN player p ON p.id = b.player_id
         JOIN game g ON g.id = b.game_id
         JOIN round r ON r.id = g.round_id
         JOIN tournament tr ON tr.id = r.tournament_id
+        JOIN question_set_edition qse ON qse.id = tr.question_set_edition_id
+        JOIN question_set qs ON qs.id = qse.question_set_id
         ORDER BY b.game_id, b.tossup_id, b.buzz_position, b.id
     """
     for row in connection.execute(query):
+        prefix = question_set_id_prefix(row["question_set_slug"])
         key = (row["game_id"], row["tossup_id"])
         buzz_number = buzz_number + 1 if key == last_key else 1
         last_key = key
@@ -778,7 +813,7 @@ def build_tossup_responses(
                 "_year": row["year"],
                 "buzz_id": f"{prefix}-bz-{row['id']}",
                 "qid": tossup_qid_map[row["tossup_id"]],
-                "game_id": f"{prefix}-g-{row['game_id']}",
+                "game_id": game_id_map[row["game_id"]],
                 "team_id": team_id_map[row["team_id"]],
                 "player_id": identities.player_id_by_db_id[row["player_id"]],
                 "buzz_number": buzz_number,
@@ -792,28 +827,33 @@ def build_tossup_responses(
 
 def build_bonus_responses(
     connection: sqlite3.Connection,
-    prefix: str,
     team_id_map: dict[int, str],
+    game_id_map: dict[int, str],
     part_qid_map: dict[int, str],
+    part_id_map: dict[int, str],
 ) -> list[dict[str, Any]]:
     entries = []
     query = """
-        SELECT d.*, SUBSTR(tr.start_date, 1, 4) AS year
+        SELECT d.*, qs.slug AS question_set_slug,
+               SUBSTR(tr.start_date, 1, 4) AS year
         FROM bonus_part_direct d
         JOIN game g ON g.id = d.game_id
         JOIN round r ON r.id = g.round_id
         JOIN tournament tr ON tr.id = r.tournament_id
+        JOIN question_set_edition qse ON qse.id = tr.question_set_edition_id
+        JOIN question_set qs ON qs.id = qse.question_set_id
         ORDER BY d.id
     """
     for row in connection.execute(query):
+        prefix = question_set_id_prefix(row["question_set_slug"])
         numeric_value, correctness, is_scored = normalize_bonus_value(row["value"])
         entries.append({
             "_year": row["year"],
             "response_id": f"{prefix}-br-{row['id']}",
-            "bonus_part_id": f"{prefix}-bp-{row['bonus_part_id']}",
+            "bonus_part_id": part_id_map[row["bonus_part_id"]],
             "bonus_qid": part_qid_map[row["bonus_part_id"]],
             "team_id": team_id_map[row["team_id"]],
-            "game_id": f"{prefix}-g-{row['game_id']}",
+            "game_id": game_id_map[row["game_id"]],
             "correctness": correctness,
             "value": numeric_value,
             "is_scored": is_scored,
@@ -922,7 +962,7 @@ def database_checks(connection: sqlite3.Connection) -> list[dict[str, Any]]:
 def dataset_checks(records: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     checks = []
     id_fields = {
-        "players": "player_id", "tournament": "tournament_id",
+        "players": "player_id", "tournaments": "tournament_id",
         "teams": "team_id", "games": "game_id", "tossup_questions": "qid",
         "bonus_questions": "qid", "tossup_responses": "buzz_id",
         "question_placements": "placement_id", "bonus_responses": "response_id",
@@ -933,7 +973,7 @@ def dataset_checks(records: dict[str, list[dict[str, Any]]]) -> list[dict[str, A
         checks.append({"name": f"unique_{table}_{field}", "status": "pass" if not duplicate_count else "fail", "count": duplicate_count})
 
     player_ids = {row["player_id"] for row in records["players"]}
-    tournament_ids = {row["tournament_id"] for row in records["tournament"]}
+    tournament_ids = {row["tournament_id"] for row in records["tournaments"]}
     team_ids = {row["team_id"] for row in records["teams"]}
     game_ids = {row["game_id"] for row in records["games"]}
     tossup_qids = {row["qid"] for row in records["tossup_questions"]}
@@ -1004,7 +1044,6 @@ def partition_records(
 def build_records(
     db_path: Path,
     lookup_path: Path,
-    prefix: str,
     include_buzz_positions: bool = True,
 ) -> tuple[dict[str, list[dict[str, Any]]], IdentityResolution, dict[str, Any]]:
     connection = sqlite3.connect(db_path)
@@ -1015,36 +1054,36 @@ def build_records(
         if lookup_violations:
             raise ValueError("Lookup/database validation failed:\n" + json.dumps(lookup_violations, indent=2))
         identities = resolve_identities(lookup_rows)
-        tournaments, tournament_id_map = build_tournaments(connection, prefix)
-        teams, team_id_map = build_teams(connection, prefix, identities)
-        games = build_games(
-            connection, prefix, team_id_map, tournament_id_map
+        tournaments, tournament_id_map = build_tournaments(connection)
+        teams, team_id_map = build_teams(connection, identities, tournament_id_map)
+        games, game_id_map = build_games(
+            connection, team_id_map, tournament_id_map
         )
         tossups, tossup_qid_map, preprocessing_inconsistencies = build_tossups(
-            connection, prefix, include_buzz_positions
+            connection, include_buzz_positions
         )
-        bonuses, part_qid_map, bonus_qid_map = build_bonuses(connection, prefix)
+        bonuses, part_qid_map, bonus_qid_map, part_id_map = build_bonuses(connection)
         question_placements, years_by_qid = build_question_placements(
-            connection, prefix, tossup_qid_map, bonus_qid_map
+            connection, tossup_qid_map, bonus_qid_map
         )
         for question in tossups + bonuses:
             question["_years"] = sorted(years_by_qid[question["qid"]])
         records = {
             "players": identities.players,
-            "tournament": tournaments,
+            "tournaments": tournaments,
             "teams": teams,
             "games": games,
             "tossup_questions": tossups,
             "bonus_questions": bonuses,
             "question_placements": question_placements,
-            "tossup_responses": build_tossup_responses(connection, prefix, identities, team_id_map, tossup_qid_map),
-            "bonus_responses": build_bonus_responses(connection, prefix, team_id_map, part_qid_map),
+            "tossup_responses": build_tossup_responses(connection, identities, team_id_map, game_id_map, tossup_qid_map),
+            "bonus_responses": build_bonus_responses(connection, team_id_map, game_id_map, part_qid_map, part_id_map),
         }
         configs = partition_records(records)
         report = {
             "database": str(db_path),
             "lookup": str(lookup_path),
-            "prefix": prefix,
+            "id_scheme": "question_set_slug",
             "table_counts": {table: len(records[table]) for table in TABLES},
             "split_counts": {
                 config_name: {
@@ -1103,11 +1142,40 @@ def write_reports(output_dir: Path, identities: IdentityResolution, report: dict
         )
 
 
+def upload_dataset_readme(repo_id: str, readme_path: Path) -> None:
+    """Publish the documentation while retaining Hub-generated config metadata."""
+    from huggingface_hub import DatasetCard, HfApi
+
+    api = HfApi()
+    if any(
+        path.startswith("tournament/")
+        for path in api.list_repo_files(repo_id, repo_type="dataset")
+    ):
+        api.delete_folder("tournament", repo_id, repo_type="dataset")
+    card = DatasetCard.load(repo_id, repo_type="dataset")
+    for field in ("configs", "dataset_info"):
+        entries = getattr(card.data, field, None)
+        if isinstance(entries, list):
+            setattr(
+                card.data,
+                field,
+                [entry for entry in entries if entry.get("config_name") != "tournament"],
+            )
+        elif isinstance(entries, dict) and entries.get("config_name") == "tournament":
+            setattr(card.data, field, None)
+    card.text = readme_path.read_text(encoding="utf-8")
+    api.upload_file(
+        path_or_fileobj=str(card).encode("utf-8"),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="dataset",
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB)
     parser.add_argument("--lookup-path", type=Path, default=DEFAULT_LOOKUP)
-    parser.add_argument("--prefix", default="acf-23-25")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--repo-id", help="Optional Hugging Face repository ID to push")
     parser.add_argument("--public", action="store_true", help="Make a pushed dataset public")
@@ -1120,7 +1188,7 @@ def main() -> None:
     args = parse_args()
     print(f"Building from {args.db_path}")
     records, identities, report = build_records(
-        args.db_path, args.lookup_path, args.prefix, not args.no_buzz_positions
+        args.db_path, args.lookup_path, not args.no_buzz_positions
     )
     write_reports(args.output_dir, identities, report)
     failures = [check for check in report["checks"] if check["status"] == "fail"]
@@ -1161,7 +1229,14 @@ def main() -> None:
                     private=not args.public,
                 )
                 print(f"Config {config_name} pushed to {args.repo_id}")
+        if not args.no_save:
+            legacy_dir = args.output_dir / "tournament"
+            if (legacy_dir / "dataset_dict.json").is_file():
+                shutil.rmtree(legacy_dir)
         write_reports(args.output_dir, identities, report)
+        if args.repo_id:
+            upload_dataset_readme(args.repo_id, args.output_dir / "README.md")
+            print(f"Dataset README pushed to {args.repo_id}")
 
 
 if __name__ == "__main__":
