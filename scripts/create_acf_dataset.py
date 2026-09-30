@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import sys
 import unicodedata
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,11 +27,16 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts import (
+    analyze_buzz_clue_pooling,
+    validate_game_bonus_counts,
+    validate_tossup_buzz_positions,
+)
 from utils import acf_sanitization, qb_tokenization
 
 DEFAULT_DB = ROOT / "data/dbs/acf-co-23-25.db"
 DEFAULT_LOOKUP = ROOT / "data/acf-23-25-team-lookup.csv"
-DEFAULT_OUTPUT = ROOT / "data/hf/acf-23-25"
+DEFAULT_OUTPUT = ROOT / "data/hf/acf-co-23-25"
 DATASET_DOCUMENTATION = ROOT / "docs/acf-23-25-dataset.md"
 TABLES = (
     "players",
@@ -608,6 +614,7 @@ def build_tossups(
     list[dict[str, Any]],
     dict[int, str],
     dict[str, list[dict[str, Any]]],
+    dict[int, tuple[int, int, list[int]]],
 ]:
     buzz_positions: dict[int, list[tuple[int, int]]] = defaultdict(list)
     if include_buzz_positions:
@@ -619,6 +626,7 @@ def build_tossups(
     qid_map = {}
     tokenization_fallbacks = []
     invalid_buzz_positions = []
+    clue_info_by_tossup = {}
     for row in connection.execute(QUESTION_QUERY):
         prefix = question_set_id_prefix(row["question_set_slug"])
         qid = f"{prefix}-t-{row['packet_id']:02d}-{row['question_number']:02d}"
@@ -652,6 +660,15 @@ def build_tossups(
             tokenization_fallbacks.append(
                 {"tossup_db_id": row["id"], "qid": qid, "error": str(error)}
             )
+        token_count = len(question.split())
+        clue_ends = sorted({len(question[:end].split()) for _, end in clue_spans})
+        if not clue_ends or clue_ends[-1] != token_count:
+            clue_ends.append(token_count)
+        clue_info_by_tossup[row["id"]] = (
+            token_count,
+            acf_sanitization.get_buzz_offset(row["question_text"]),
+            clue_ends,
+        )
         entries.append(
             {
                 "qid": qid,
@@ -668,7 +685,7 @@ def build_tossups(
     return entries, qid_map, {
         "question_tokenization_fallbacks": tokenization_fallbacks,
         "invalid_human_buzz_positions": invalid_buzz_positions,
-    }
+    }, clue_info_by_tossup
 
 
 BONUS_QUERY = QUESTION_QUERY.replace(
@@ -777,12 +794,30 @@ def build_question_placements(
     return entries, years_by_qid
 
 
+def n_clues_heard_at_buzz(
+    source_position: Any, token_count: int, offset: int, clue_ends: list[int], k: int = 5
+) -> int | None:
+    """Map a MODAQ word index to a 1-based clue count using the fixed-k rule."""
+    if not isinstance(source_position, int) or not clue_ends or not token_count:
+        return None
+    adjusted = source_position - offset
+    if adjusted < 0 or adjusted > token_count:
+        return None
+    progress = min(adjusted + 1, token_count)
+    current_index = bisect_left(clue_ends, progress)
+    if current_index == 0 or progress == clue_ends[current_index]:
+        return current_index + 1
+    previous_end = clue_ends[current_index - 1]
+    return current_index if progress - previous_end <= k else current_index + 1
+
+
 def build_tossup_responses(
     connection: sqlite3.Connection,
     identities: IdentityResolution,
     team_id_map: dict[int, str],
     game_id_map: dict[int, str],
     tossup_qid_map: dict[int, str],
+    clue_info_by_tossup: dict[int, tuple[int, int, list[int]]],
 ) -> list[dict[str, Any]]:
     entries = []
     last_key = None
@@ -808,6 +843,7 @@ def build_tossup_responses(
         numeric_value = value if isinstance(value, int) else None
         token_position = row["buzz_position"]
         numeric_position = token_position if isinstance(token_position, int) else None
+        token_count, offset, clue_ends = clue_info_by_tossup[row["tossup_id"]]
         entries.append(
             {
                 "_year": row["year"],
@@ -820,6 +856,9 @@ def build_tossup_responses(
                 "correctness": numeric_value is not None and numeric_value > 0,
                 "value": numeric_value,
                 "token_position": numeric_position,
+                "n_clues_heard": n_clues_heard_at_buzz(
+                    token_position, token_count, offset, clue_ends
+                ),
             }
         )
     return entries
@@ -1059,7 +1098,7 @@ def build_records(
         games, game_id_map = build_games(
             connection, team_id_map, tournament_id_map
         )
-        tossups, tossup_qid_map, preprocessing_inconsistencies = build_tossups(
+        tossups, tossup_qid_map, preprocessing_inconsistencies, clue_info_by_tossup = build_tossups(
             connection, include_buzz_positions
         )
         bonuses, part_qid_map, bonus_qid_map, part_id_map = build_bonuses(connection)
@@ -1076,10 +1115,57 @@ def build_records(
             "tossup_questions": tossups,
             "bonus_questions": bonuses,
             "question_placements": question_placements,
-            "tossup_responses": build_tossup_responses(connection, identities, team_id_map, game_id_map, tossup_qid_map),
+            "tossup_responses": build_tossup_responses(connection, identities, team_id_map, game_id_map, tossup_qid_map, clue_info_by_tossup),
             "bonus_responses": build_bonus_responses(connection, team_id_map, game_id_map, part_qid_map, part_id_map),
         }
         configs = partition_records(records)
+        buzz_position_rows, buzz_position_totals = validate_tossup_buzz_positions.validate(db_path)
+        overshoots = [row for row in buzz_position_rows if row["distance_from_end"] > 0]
+        game_bonus_rows = validate_game_bonus_counts.validate(db_path)
+        game_bonus_mismatches = [row for row in game_bonus_rows if row["difference"]]
+        game_bonus_difference_counts = Counter(
+            row["difference"] for row in game_bonus_mismatches
+        )
+        pooling_rows, pooling_totals, _ = analyze_buzz_clue_pooling.analyze(db_path)
+        k5_pooling = next(
+            row for row in pooling_rows if row["scope"] == "all_valid" and row["method"] == "k=5"
+        )
+        missing_clue_counts = [
+            row["buzz_id"] for row in records["tossup_responses"]
+            if row["n_clues_heard"] is None
+        ]
+        validation_checks = [
+            {
+                "name": "tossup_buzzes_past_sanitized_end",
+                "status": "warning" if overshoots else "pass",
+                "count": buzz_position_totals["beyond_end_buzzes"],
+                "affected_tossups": len(overshoots),
+                "examples": [row["tossup_id"] for row in overshoots[:20]],
+            },
+            {
+                "name": "game_correct_tossups_match_bonuses_played",
+                "status": "warning" if game_bonus_mismatches else "pass",
+                "count": len(game_bonus_mismatches),
+                "max_absolute_difference": max(
+                    (abs(row["difference"]) for row in game_bonus_mismatches),
+                    default=0,
+                ),
+                "difference_counts": dict(sorted(game_bonus_difference_counts.items())),
+                "examples": game_bonus_mismatches[:20],
+            },
+            {
+                "name": "tossup_responses_without_clue_count",
+                "status": "warning" if missing_clue_counts else "pass",
+                "count": len(missing_clue_counts),
+                "examples": missing_clue_counts[:20],
+            },
+            {
+                "name": "k5_clue_pooling_early_correct_buzzes",
+                "status": "info",
+                "count": k5_pooling["correct_backward_buzzes"],
+                "correct_boundary_cdf_error_pct": k5_pooling["correct_boundary_cdf_error_pct"],
+            },
+        ]
         report = {
             "database": str(db_path),
             "lookup": str(lookup_path),
@@ -1098,7 +1184,14 @@ def build_records(
             },
             "preprocessing_inconsistencies": preprocessing_inconsistencies,
             "lookup_violations": lookup_violations,
-            "checks": database_checks(connection) + dataset_checks(records),
+            "checks": database_checks(connection) + dataset_checks(records) + validation_checks,
+            "validation_details": {
+                "buzz_position_totals": dict(buzz_position_totals),
+                "tossup_buzz_overshoots": overshoots,
+                "game_bonus_count_mismatches": game_bonus_mismatches,
+                "clue_pooling_totals": dict(pooling_totals),
+                "clue_pooling_strategies": pooling_rows,
+            },
         }
         return records, identities, report
     finally:
@@ -1108,6 +1201,67 @@ def build_records(
 def write_reports(output_dir: Path, identities: IdentityResolution, report: dict[str, Any]) -> None:
     report_dir = output_dir / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
+    validation = report["validation_details"]
+    with (report_dir / "tossup_buzz_overshoots.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        fields = (
+            "tossup_id", "year", "tournament_name", "answer_line", "question_url",
+            "token_count", "last_buzz_raw", "last_buzz_adjusted", "distance_from_end",
+            "beyond_end_buzz_count", "beyond_end_distinct_position_count", "cause",
+        )
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in validation["tossup_buzz_overshoots"]:
+            for year, tournament_name in row["tournaments"] or [("", "")]:
+                writer.writerow({
+                    **{field: row.get(field) for field in fields if field not in {"year", "tournament_name"}},
+                    "year": year,
+                    "tournament_name": tournament_name,
+                })
+    linked_overshoots = [
+        "# Tossups with buzzes past sanitized END",
+        "",
+        f"{len(validation['tossup_buzz_overshoots'])} tossups; "
+        f"{validation['buzz_position_totals'].get('beyond_end_buzzes', 0)} buzz records. "
+        "END is the position after the last whitespace token.",
+        "",
+    ]
+    for row in sorted(
+        validation["tossup_buzz_overshoots"],
+        key=lambda item: (-item["distance_from_end"], item["tossup_id"]),
+    ):
+        slug = row["question_url"].rsplit("/", 1)[-1].replace("-", " ")
+        tournaments = "; ".join(
+            name if name.startswith(year) else f"{year} {name}"
+            for year, name in row["tournaments"]
+        ) or "unknown tournament"
+        linked_overshoots.append(
+            f"- [{slug}]({row['question_url']}) (ID {row['tossup_id']}): "
+            f"buzz {row['last_buzz_adjusted']} vs END {row['token_count']} "
+            f"(+{row['distance_from_end']}); "
+            f"{row['beyond_end_buzz_count']} out-of-range buzz records; {tournaments}."
+        )
+    (report_dir / "tossup_buzz_overshoots.md").write_text(
+        "\n".join(linked_overshoots) + "\n", encoding="utf-8"
+    )
+    with (report_dir / "game_bonus_count_mismatches.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        fields = (
+            "game_id", "year", "tournament", "round", "packet", "tossups_read",
+            "correct_tossups", "bonus_part_rows", "bonuses_played", "difference",
+        )
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(validation["game_bonus_count_mismatches"])
+    with (report_dir / "clue_pooling_strategies.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        rows = validation["clue_pooling_strategies"]
+        writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
     with (report_dir / "player_identity_mapping.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(identities.mapping_rows[0]))
         writer.writeheader()
@@ -1132,6 +1286,25 @@ def write_reports(output_dir: Path, identities: IdentityResolution, report: dict
     lines += [
         f"- `{name}`: {len(items):,}"
         for name, items in report["preprocessing_inconsistencies"].items()
+    ]
+    game_check = next(
+        check for check in report["checks"]
+        if check["name"] == "game_correct_tossups_match_bonuses_played"
+    )
+    difference_text = ", ".join(
+        f"{int(difference):+d}: {count} games"
+        for difference, count in game_check["difference_counts"].items()
+    ) or "none"
+    lines += ["", "## Buzz and game validation", ""]
+    lines += [
+        f"- Buzzes past sanitized END: {validation['buzz_position_totals'].get('beyond_end_buzzes', 0):,} "
+        f"across {len(validation['tossup_buzz_overshoots']):,} tossups "
+        "([linked tossups](tossup_buzz_overshoots.md); "
+        "[CSV](tossup_buzz_overshoots.csv)).",
+        f"- Games with correct tossups differing from bonuses played: {game_check['count']:,}. "
+        f"Maximum absolute difference: {game_check['max_absolute_difference']}. "
+        f"Differences (correct minus bonuses): {difference_text} "
+        "([CSV](game_bonus_count_mismatches.csv)).",
     ]
     lines += ["", "## Sanity checks", ""]
     lines += [f"- **{check['status'].upper()}** `{check['name']}`: {check.get('count', check.get('detail', ''))}" for check in report["checks"]]
@@ -1219,6 +1392,15 @@ def main() -> None:
             )
             if not args.no_save:
                 config_dir = args.output_dir / config_name
+                # Older builds saved a single Dataset at this path. Its root
+                # state.json takes precedence over dataset_dict.json on load.
+                for legacy_file in ("state.json", "dataset_info.json"):
+                    (config_dir / legacy_file).unlink(missing_ok=True)
+                for legacy_shard in config_dir.glob("data-*.arrow"):
+                    legacy_shard.unlink()
+                legacy_all = config_dir / "all"
+                if legacy_all.is_dir():
+                    shutil.rmtree(legacy_all)
                 dataset.save_to_disk(str(config_dir))
                 print(f"Config {config_name} saved to {config_dir}")
             if args.repo_id:

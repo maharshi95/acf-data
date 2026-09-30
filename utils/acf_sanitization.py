@@ -146,11 +146,18 @@ def remove_braces(s: str) -> str:
     return s
 
 
-def sanitize_question(q):
+def sanitize_question(
+    q: str,
+    remove_leading_mod_instruction: bool = True,
+    remove_in_question_mod_instructions: bool = False,
+) -> str:
+    """Clean question text, optionally removing each kind of moderator instruction."""
     q = squish_whitespace(q)
-    q, _ = remove_instruction(q)
+    if remove_leading_mod_instruction:
+        q, _ = remove_instruction(q)
     q = convert_html_symbols(q)
-    q = remove_mod_instructions(q)
+    if remove_in_question_mod_instructions:
+        q = remove_mod_instructions(q)
     q = remove_tags(q)
     q = remove_pgs(q)
     q = remove_power_pos(q)

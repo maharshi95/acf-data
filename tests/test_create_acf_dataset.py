@@ -151,6 +151,31 @@ class SplitTests(unittest.TestCase):
             acf.partition_records({"teams": [{"_year": "2022", "team_id": "tm-1"}]})
 
 
+class ClueCountTests(unittest.TestCase):
+    def test_k5_maps_buzzes_to_read_clue_counts(self):
+        # Source positions include two leading moderator-instruction words.
+        ends = [10, 30, 50]
+        cases = {
+            2: 1,    # First word of the first clue.
+            11: 1,   # Last word of the first clue.
+            13: 1,   # Two tokens into clue two: map back.
+            17: 2,   # Six tokens into clue two: map forward.
+            33: 2,   # Two tokens into clue three: map back.
+            39: 3,   # Eight tokens into clue three: map forward.
+            52: 3,   # MODAQ END marker after 50 words.
+        }
+        for source_position, expected in cases.items():
+            with self.subTest(source_position=source_position):
+                self.assertEqual(
+                    acf.n_clues_heard_at_buzz(source_position, 50, 2, ends), expected
+                )
+        for source_position in ("NA", 1, 53):
+            with self.subTest(invalid=source_position):
+                self.assertIsNone(
+                    acf.n_clues_heard_at_buzz(source_position, 50, 2, ends)
+                )
+
+
 class TournamentAndGameMetadataTests(unittest.TestCase):
     def test_question_set_id_prefixes(self):
         expected = {
